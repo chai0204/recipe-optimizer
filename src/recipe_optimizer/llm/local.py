@@ -61,25 +61,45 @@ class LocalLLMClient(LLMClient):
         model_id: str = "google/gemma-4-E4B-it",
         device: str = "cpu",
         torch_dtype: str = "bfloat16",
+        stream_to_stdout: bool = False,
     ) -> None:
         super().__init__()
 
         # Heavy imports kept local so that ``import recipe_optimizer.llm``
         # without using LocalLLMClient does not pull in torch.
         import torch  # noqa: PLC0415
-        from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
+        from transformers import AutoProcessor  # noqa: PLC0415
+
+        # gemma-4-E4B-it is a multimodal (image+audio+text) model whose
+        # architecture is ``Gemma4ForConditionalGeneration``. The right
+        # auto class is ``AutoModelForImageTextToText``. For text-only
+        # inputs we simply omit images/audio in the chat template.
+        # We try the multimodal path first and fall back to plain
+        # CausalLM for text-only models like gemma-2-2b-it.
+        try:
+            from transformers import AutoModelForImageTextToText  # noqa: PLC0415
+
+            ModelClass = AutoModelForImageTextToText
+        except ImportError:  # pragma: no cover — older transformers
+            from transformers import AutoModelForCausalLM  # noqa: PLC0415
+
+            ModelClass = AutoModelForCausalLM
 
         self.model_id = model_id
         self.device = device
+        self.stream_to_stdout = stream_to_stdout
         dtype = getattr(torch, torch_dtype)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        # ``device_map=device`` lets transformers/accelerate place the
-        # weights directly without a separate ``.to(device)`` step,
-        # which avoids momentarily holding both copies in RAM.
-        self.model = AutoModelForCausalLM.from_pretrained(
+        # AutoProcessor wraps tokenizer + image_processor + audio_feature_extractor.
+        # For text-only models this still works (it just exposes tokenizer pieces).
+        self.processor = AutoProcessor.from_pretrained(model_id)
+        # Some processors expose tokenizer directly; some do via processor.tokenizer.
+        self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
+
+        # transformers ≥5.0 deprecated ``torch_dtype`` in favour of ``dtype``.
+        self.model = ModelClass.from_pretrained(
             model_id,
-            torch_dtype=dtype,
+            dtype=dtype,
             device_map=device,
             low_cpu_mem_usage=True,
         )
@@ -95,13 +115,14 @@ class LocalLLMClient(LLMClient):
         examples: FewShotExamples | None,
         prompt: str,
         output_schema: type[BaseModel],
+        inject_schema: bool = True,
     ) -> list[dict[str, str]]:
-        schema_json = json.dumps(
-            output_schema.model_json_schema(), ensure_ascii=False, indent=2
-        )
-        sys_text = (system or "You are a precise assistant.") + SCHEMA_INSTRUCTION_TEMPLATE.format(
-            schema=schema_json
-        )
+        sys_text = system or "You are a precise assistant."
+        if inject_schema:
+            schema_json = json.dumps(
+                output_schema.model_json_schema(), ensure_ascii=False, indent=2
+            )
+            sys_text += SCHEMA_INSTRUCTION_TEMPLATE.format(schema=schema_json)
 
         messages: list[dict[str, str]] = [{"role": "system", "content": sys_text}]
 
@@ -138,28 +159,86 @@ class LocalLLMClient(LLMClient):
                     return cleaned[start : i + 1]
         return cleaned[start:]
 
+    @staticmethod
+    def _normalize_messages_for_multimodal(
+        messages: list[dict[str, str]],
+    ) -> list[dict]:
+        """Multimodal processors (Gemma4, PaliGemma) expect ``content`` as a
+        list of ``{type, text|image|audio}`` dicts, not a bare string.
+
+        Convert ``{"role": "user", "content": "hi"}`` →
+        ``{"role": "user", "content": [{"type": "text", "text": "hi"}]}``.
+        Already-structured content (list of dicts) is left untouched.
+        """
+        normalized: list[dict] = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, str):
+                normalized.append({**msg, "content": [{"type": "text", "text": content}]})
+            else:
+                normalized.append(dict(msg))
+        return normalized
+
     def _generate_text(
         self, messages: list[dict[str, str]], context: LLMCallContext
     ) -> str:
         import torch  # noqa: PLC0415
 
-        chat_input = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        ).to(self.device)
+        # Prefer the processor's apply_chat_template (multimodal-aware) and
+        # fall back to the tokenizer's for plain causal-LM models.
+        applier = getattr(self.processor, "apply_chat_template", None) or (
+            self.tokenizer.apply_chat_template
+        )
+
+        # Multimodal processors usually need typed content blocks.
+        prepared_messages = self._normalize_messages_for_multimodal(messages)
+
+        try:
+            inputs = applier(
+                prepared_messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+        except (TypeError, ValueError):
+            # Older transformers / plain tokenizer: returns a tensor of ids
+            ids = applier(
+                messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_tensors="pt",
+            )
+            inputs = {"input_ids": ids}
+
+        # Move all tensor inputs to the target device
+        moved: dict[str, "torch.Tensor"] = {}
+        for k, v in dict(inputs).items():
+            moved[k] = v.to(self.device) if hasattr(v, "to") else v
+
+        prompt_len = moved["input_ids"].shape[1]
+
+        # Optional streaming: prints tokens to stdout as they are produced,
+        # giving real-time visibility for long generations on CPU.
+        streamer = None
+        if self.stream_to_stdout:
+            from transformers import TextStreamer  # noqa: PLC0415
+
+            streamer = TextStreamer(
+                self.tokenizer, skip_prompt=True, skip_special_tokens=True
+            )
 
         with torch.no_grad():
             output = self.model.generate(
-                chat_input,
+                **moved,
                 max_new_tokens=context.max_tokens,
                 do_sample=context.temperature > 0.0,
                 temperature=max(context.temperature, 1e-5),
                 pad_token_id=self.tokenizer.eos_token_id,
+                streamer=streamer,
             )
 
-        generated = output[0][chat_input.shape[1] :]
+        generated = output[0][prompt_len:]
         return self.tokenizer.decode(generated, skip_special_tokens=True)
 
     # ------------------------------------------------------------------
@@ -176,11 +255,14 @@ class LocalLLMClient(LLMClient):
         context: LLMCallContext | None = None,
         max_retries: int = 1,
         label: str = "",
+        inject_schema: bool = True,
     ) -> T:
         ctx = context or LLMCallContext()
         ts = self._now_iso()
 
-        messages = self._build_messages(system, examples, prompt, output_schema)
+        messages = self._build_messages(
+            system, examples, prompt, output_schema, inject_schema=inject_schema
+        )
         last_error: str | None = None
         raw_text = ""
 

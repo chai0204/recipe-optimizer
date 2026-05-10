@@ -23,41 +23,47 @@ PARSER_LABEL = "parser"
 
 
 SYSTEM_PROMPT = """\
-You are a precise recipe analyzer. You convert a Japanese home-cooking
-recipe into a directed acyclic graph (DAG) describing the cooking process.
+You convert a Japanese home-cooking recipe into a directed acyclic graph
+(DAG) JSON object. A GoalNode is a state of ingredients; a ProcessEdge
+is an action that consumes one or more nodes (from_nodes) and produces
+one node (to_node).
 
-Concepts:
-- A GoalNode is a state of ingredients (raw, prepared, partially cooked,
-  or finished). Each node has a stable ``id`` (e.g., "n_onion_sliced") and
-  a short Japanese description (e.g., "薄切りにした玉ねぎ").
-- A ProcessEdge is an action that consumes one or more input states
-  (``from_nodes``) and produces a single output state (``to_node``).
+Output JSON shape (compact):
 
-Required behaviour:
+{
+  "title": str,
+  "servings": int,
+  "nodes": [
+    {"id": str, "description": str, "is_final": bool}
+  ],
+  "edges": [
+    {
+      "id": str,
+      "from_nodes": [str],
+      "to_node": str,
+      "action": <one of: chop|slice|mince|peel|boil|boil_water|simmer|saute|fry|bake|steam|grill|microwave|mix|beat|knead|rest|serve|unknown>,
+      "description": str,
+      "tools_required": [
+        {"name": str, "kind": <one of: heat_source|container|utensil|appliance>}
+      ],
+      "duration_min": float,
+      "attentive_min": float
+    }
+  ],
+  "final_node_id": str
+}
 
-1. Create explicit nodes for raw ingredients that appear in the recipe
-   (e.g., "n_chicken_raw"), even if the recipe text does not mention
-   them as a separate step.
-2. Detect implicit prep steps. If a step says "切った鶏肉を加える" but
-   no prior step explicitly cuts the chicken, you MUST add an edge for
-   "鶏肉を切る" producing the cut state.
-3. Each ProcessEdge specifies the canonical ``action`` from this set:
-   chop, slice, mince, peel, boil, boil_water, simmer, saute, fry,
-   bake, steam, grill, microwave, mix, beat, knead, rest, serve,
-   unknown. Use ``unknown`` only when no other choice fits.
-4. Each ProcessEdge specifies ``tools_required`` (list of Tool objects
-   with ``name`` and ``kind``). ``kind`` ∈ {heat_source, container,
-   utensil, appliance}. Composite tools may be written as e.g.
-   "包丁+まな板" with ``kind: utensil``.
-5. ``duration_min`` is wall-clock time in minutes. ``attentive_min`` is
-   how long the cook cannot leave (≤ duration_min). For "煮る30秒",
-   set duration_min=0.5 attentive_min=0.5. For "弱火で15分煮込む",
-   duration_min=15 but attentive_min may be 1.0 (occasional check).
-6. Output exactly one final node with ``is_final: true`` and reference
-   it as ``final_node_id``.
-7. All ``from_nodes`` and ``to_node`` references MUST be node IDs that
-   exist in your ``nodes`` array. No dangling references.
-8. Output JSON only. No prose, no markdown fences.
+Rules:
+1. Create explicit nodes for raw ingredients (e.g., "n_chicken_raw").
+2. If a step references already-prepared ingredients ("切った鶏肉を加える"),
+   add a missing prep edge that produces them.
+3. duration_min is total time. attentive_min is how long the cook is
+   actively engaged (must be ≤ duration_min). For "弱火で15分煮込む",
+   duration_min=15 attentive_min=1.0. For "切る2分", both = 2.0.
+4. Composite tools allowed: name "包丁+まな板", kind "utensil".
+5. Exactly one node has is_final=true, and final_node_id matches its id.
+6. All from_nodes and to_node values must reference existing node ids.
+7. Output the JSON object only — no prose, no markdown fences.
 """
 
 
@@ -95,12 +101,18 @@ class RecipeParser:
 
     def parse(self, recipe: RawRecipe) -> RecipeDAG:
         prompt = _build_prompt(recipe)
+        # ``inject_schema=False`` because backends like LlamaCppClient
+        # apply the schema as a sampling-time grammar constraint —
+        # the textual schema dump becomes redundant. The compact shape
+        # description in SYSTEM_PROMPT remains as a guide for which
+        # values to populate (durations, action enum, etc.).
         dag = self.client.generate_structured(
             prompt=prompt,
             output_schema=RecipeDAG,
             system=SYSTEM_PROMPT,
             max_retries=self.max_retries,
             label=PARSER_LABEL,
+            inject_schema=False,
         )
         # Stash the original recipe text on the DAG for downstream traceability
         if not dag.raw_text:

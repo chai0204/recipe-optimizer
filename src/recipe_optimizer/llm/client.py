@@ -110,6 +110,7 @@ class LLMClient(ABC):
         context: LLMCallContext | None = None,
         max_retries: int = 1,
         label: str = "",
+        inject_schema: bool = True,
     ) -> T:
         """Generate output validated against output_schema.
 
@@ -121,6 +122,13 @@ class LLMClient(ABC):
             context: Decoding parameters (temperature, max_tokens).
             max_retries: How many times to retry on schema validation failure.
             label: Module name used for logging (e.g., "parser").
+            inject_schema: When True (default), the client embeds the full
+                JSON Schema of ``output_schema`` into the system message
+                so the model knows the exact target shape. Set False when
+                the caller has already described the structure manually
+                in ``system`` — useful for large schemas where automatic
+                injection inflates the prompt past the model's effective
+                attention window.
 
         Returns:
             Validated instance of ``output_schema``.

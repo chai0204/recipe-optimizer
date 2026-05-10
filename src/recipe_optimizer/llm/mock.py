@@ -69,7 +69,11 @@ class MockLLMClient(LLMClient):
         context: LLMCallContext | None = None,
         max_retries: int = 1,
         label: str = "",
+        inject_schema: bool = True,
     ) -> T:
+        # ``inject_schema`` is accepted for API parity with real backends
+        # but is a no-op here — Mock just looks up the registered handler.
+        del inject_schema
         ts = self._now_iso()
 
         if label not in self._handlers:
