@@ -1,6 +1,8 @@
 {
   "user_id": "demo_user_01",
   "burners_count": 2,
+  "num_cooks": 1,
+  "workstation_count": 1,
   "skill_level": "intermediate",
   "skill_factors": {
     "chop": 1.2,

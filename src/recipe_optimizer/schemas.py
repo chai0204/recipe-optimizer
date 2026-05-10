@@ -214,6 +214,8 @@ class UserProfile(BaseModel):
     user_id: str
     tools_owned: list[Tool]
     burners_count: int = 2
+    num_cooks: int = 1  # human resource pool used for ``attentive_min`` of each edge
+    workstation_count: int = 1  # cutting/prep counter, consumed by chop/slice/mince/peel/knead
     skill_level: SkillLevel = SkillLevel.INTERMEDIATE
     skill_factors: dict[str, float] = Field(default_factory=dict)
     # 例: {"chop": 1.3, "saute": 1.0}  # 平均比、>1 で遅い
