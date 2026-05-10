@@ -9,16 +9,18 @@ dependencies = [
     "networkx>=3.2",
     "matplotlib>=3.8",
     "numpy>=1.26",
-    # LLM (local, optional at runtime; mock client works without these)
-    "transformers>=4.40",
-    "torch>=2.2",
-    "accelerate>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
+]
+local-llm = [
+    # HuggingFace transformers backend (heavy, optional)
+    "transformers>=4.40",
+    "torch>=2.2",
+    "accelerate>=0.27",
 ]
 gguf = [
     # CPU-friendly local inference via GGUF quantized models
