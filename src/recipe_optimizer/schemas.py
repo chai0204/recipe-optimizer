@@ -328,4 +328,5 @@ class RenderedRecipe(BaseModel):
     mermaid_dag: str  # ② 構造化DAG (mermaid記法)
     shopping_list: ShoppingList  # ③ 使うものリスト
     schedule: Schedule
+    optimized_dag: "RecipeDAG | None" = None  # post-substitution DAG for callers
     substitutions_made: list[SubstitutionCandidate] = Field(default_factory=list)
