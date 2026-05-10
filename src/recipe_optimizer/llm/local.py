@@ -60,7 +60,7 @@ class LocalLLMClient(LLMClient):
         self,
         model_id: str = "google/gemma-4-E4B-it",
         device: str = "cpu",
-        torch_dtype: str = "float32",
+        torch_dtype: str = "bfloat16",
     ) -> None:
         super().__init__()
 
@@ -74,10 +74,15 @@ class LocalLLMClient(LLMClient):
         dtype = getattr(torch, torch_dtype)
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        # ``device_map=device`` lets transformers/accelerate place the
+        # weights directly without a separate ``.to(device)`` step,
+        # which avoids momentarily holding both copies in RAM.
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
             torch_dtype=dtype,
-        ).to(device)
+            device_map=device,
+            low_cpu_mem_usage=True,
+        )
         self.model.eval()
 
     # ------------------------------------------------------------------
