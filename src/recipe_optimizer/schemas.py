@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +134,67 @@ class RecipeDAG(BaseModel):
     edges: list[ProcessEdge]
     final_node_id: str
     raw_text: str = ""  # original recipe text for traceability
+
+    @model_validator(mode="after")
+    def _validate_dag_integrity(self) -> "RecipeDAG":
+        """Cross-field referential integrity.
+
+        - Node IDs must be unique
+        - Every edge.from_nodes / edge.to_node must reference an existing node
+        - final_node_id must be one of the nodes
+        - Edge IDs must be unique
+
+        Raising here causes ``LLMClient.generate_structured`` to retry the
+        LLM call with the validation error in the feedback turn.
+        """
+        node_ids = {n.id for n in self.nodes}
+        if len(node_ids) != len(self.nodes):
+            raise ValueError("Duplicate node IDs in DAG")
+
+        edge_ids = {e.id for e in self.edges}
+        if len(edge_ids) != len(self.edges):
+            raise ValueError("Duplicate edge IDs in DAG")
+
+        if self.final_node_id not in node_ids:
+            raise ValueError(
+                f"final_node_id '{self.final_node_id}' not found in nodes"
+            )
+
+        for edge in self.edges:
+            for from_id in edge.from_nodes:
+                if from_id not in node_ids:
+                    raise ValueError(
+                        f"Edge {edge.id!r}: from_node '{from_id}' not found in nodes"
+                    )
+            if edge.to_node not in node_ids:
+                raise ValueError(
+                    f"Edge {edge.id!r}: to_node '{edge.to_node}' not found in nodes"
+                )
+            if edge.attentive_min > edge.duration_min:
+                raise ValueError(
+                    f"Edge {edge.id!r}: attentive_min ({edge.attentive_min}) "
+                    f"exceeds duration_min ({edge.duration_min})"
+                )
+
+        return self
+
+
+class RawRecipe(BaseModel):
+    """Unparsed recipe loaded from JSON (e.g. scraped from Cookpad).
+
+    This is the parser's input. Already lightly structured into ingredients
+    and steps lists, so the parser focuses on extracting cooking semantics
+    rather than handling free-form prose.
+    """
+
+    id: str
+    title: str
+    servings: int = 1
+    source_url: str = ""
+    source_attribution: str = ""
+    ingredients_text: list[str]
+    steps_text: list[str]
+    tips: str = ""
 
 
 # ---------------------------------------------------------------------------
