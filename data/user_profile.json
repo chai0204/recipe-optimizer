@@ -1,0 +1,106 @@
+{
+  "user_id": "demo_user_01",
+  "burners_count": 2,
+  "skill_level": "intermediate",
+  "skill_factors": {
+    "chop": 1.2,
+    "slice": 1.1,
+    "mince": 1.4,
+    "saute": 1.0,
+    "boil": 1.0,
+    "simmer": 1.0,
+    "beat": 1.0,
+    "mix": 1.0
+  },
+  "tools_owned": [
+    {
+      "name": "コンロ口1",
+      "kind": "heat_source",
+      "attributes": {"type": "gas", "max_power": "high"}
+    },
+    {
+      "name": "コンロ口2",
+      "kind": "heat_source",
+      "attributes": {"type": "gas", "max_power": "high"}
+    },
+    {
+      "name": "電子レンジ",
+      "kind": "appliance",
+      "attributes": {"max_power_w": 600, "has_turntable": true}
+    },
+    {
+      "name": "炊飯器",
+      "kind": "appliance",
+      "attributes": {"capacity_go": 5}
+    },
+    {
+      "name": "片手鍋",
+      "kind": "container",
+      "attributes": {"capacity_ml": 1500, "has_lid": true, "diameter_cm": 18}
+    },
+    {
+      "name": "両手鍋",
+      "kind": "container",
+      "attributes": {"capacity_ml": 3000, "has_lid": true, "diameter_cm": 24}
+    },
+    {
+      "name": "フライパン",
+      "kind": "container",
+      "attributes": {"capacity_ml": 2000, "has_lid": false, "diameter_cm": 26, "non_stick": true}
+    },
+    {
+      "name": "ボウル大",
+      "kind": "container",
+      "attributes": {"capacity_ml": 2000}
+    },
+    {
+      "name": "ボウル小",
+      "kind": "container",
+      "attributes": {"capacity_ml": 500}
+    },
+    {
+      "name": "ザル",
+      "kind": "container",
+      "attributes": {"diameter_cm": 22}
+    },
+    {
+      "name": "包丁",
+      "kind": "utensil",
+      "attributes": {"type": "santoku"}
+    },
+    {
+      "name": "まな板",
+      "kind": "utensil",
+      "attributes": {}
+    },
+    {
+      "name": "菜箸",
+      "kind": "utensil",
+      "attributes": {}
+    },
+    {
+      "name": "おたま",
+      "kind": "utensil",
+      "attributes": {}
+    },
+    {
+      "name": "計量カップ",
+      "kind": "utensil",
+      "attributes": {"max_ml": 500}
+    },
+    {
+      "name": "計量スプーン",
+      "kind": "utensil",
+      "attributes": {}
+    }
+  ],
+  "preferences": {
+    "avoid_deep_fry": true,
+    "prefer_minimal_cleanup": true,
+    "max_cooking_time_min": 30
+  },
+  "_notes_for_poc": [
+    "意図的に「やかん」「オーブン」「ホットプレート」「圧力鍋」「ミキサー」を所有していない設定。",
+    "麦茶レシピが入力されればやかん→鍋への代替が、肉じゃがが入力されれば普通に作れる、という対比でテスト可能。"
+  ]
+}

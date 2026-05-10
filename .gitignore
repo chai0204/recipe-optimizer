@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# uv
+.uv-cache/
+uv.lock
+
+# Distribution
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# LLM models (large files)
+models/
+*.gguf
+*.safetensors
+*.bin
+
+# Logs
+*.log
+session_logs/*.jsonl
+!session_logs/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
