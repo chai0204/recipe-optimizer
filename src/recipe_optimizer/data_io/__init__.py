@@ -4,9 +4,9 @@ from .profile import load_profile, save_profile
 from .recipes import list_recipes, load_raw_recipe
 from .tool_use_table import (
     add_entry,
-    filter_by_owned,
+    can_satisfy_spec,
     find_compatible,
-    is_tool_owned,
+    is_option_compatible,
     load_table,
     lookup,
     save_table,
@@ -25,8 +25,8 @@ __all__ = [
     "save_table",
     # tool_use_table operations
     "lookup",
-    "is_tool_owned",
-    "filter_by_owned",
+    "can_satisfy_spec",
+    "is_option_compatible",
     "find_compatible",
     "add_entry",
     "update_time_factor",

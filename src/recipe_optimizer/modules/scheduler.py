@@ -1,93 +1,90 @@
-"""Resource-constrained scheduler for ``RecipeDAG``.
+"""Resource-constrained scheduler against explicit ``resource_uses``.
 
-Pure-algorithmic module (no LLM). Produces a :class:`Schedule` that
-respects four resource pools simultaneously:
+Pure-algorithmic module. The substitution layer (proposer + rewriter)
+ensures every edge in the input DAG carries a ``resource_uses`` list
+whose entries reference resource kinds (and optional name hints) the
+user actually owns. The scheduler then assigns each requirement to a
+concrete ``Resource`` instance and walks the timeline.
 
-- **Cook** (``num_cooks``): consumed for ``attentive_min`` only — frees
-  up while the dish continues simmering / baking on its own.
-- **Burner** (``burners_count``): consumed for ``duration_min`` whenever
-  an edge lists a ``kind=heat_source`` tool.
-- **Workstation** (``workstation_count``): consumed for ``attentive_min``
-  for chop / slice / mince / peel / knead actions.
-- **Named containers** (one slot per name): every tool with kind in
-  ``{CONTAINER, APPLIANCE}`` is held for ``duration_min``.
+Algorithm:
 
-Algorithm: classical *list scheduling* — iterate edges in topological
-order, compute the earliest time at which all required resources and
-all predecessor edges have completed, allocate, repeat. Greedy. Not
-guaranteed optimal but converges within a few percent of optimum on
-recipe-sized DAGs and runs in O(E log E).
+1. Build the edge dependency graph (A → B iff A.to_node ∈ B.from_nodes).
+2. Topologically iterate edges.
+3. For each edge, compute the earliest start such that
+   - all predecessor edges have finished, AND
+   - every ``ResourceRequirement`` can be matched to a ``Resource`` of
+     the right kind+name_hint whose busy-until time is ≤ the candidate
+     start (taking start_offset_min into account).
+4. Allocate each chosen resource for ``[start+offset, start+offset+hold]``.
 
-The critical path (longest dependency chain weighted by ``duration_min``)
-is computed independently of resources — it is the lower bound on
-makespan if every resource were unlimited, and is what we surface to
-the user as "the bottleneck steps".
+Critical path is computed independently of resources (longest chain
+weighted by ``duration_min``).
 """
 
 from __future__ import annotations
 
 import networkx as nx
 
+from ..data_io.tool_use_table import _matches_name_hint
 from ..schemas import (
     Constraints,
     ProcessEdge,
-    ProcessType,
     RecipeDAG,
+    Resource,
+    ResourceRequirement,
     Schedule,
     ScheduledStep,
-    Tool,
-    ToolKind,
+    UserProfile,
 )
 
 # ---------------------------------------------------------------------------
-# Resource introspection
+# Resource pool with busy-until per slot
 # ---------------------------------------------------------------------------
 
 
-WORKSTATION_ACTIONS: frozenset[ProcessType] = frozenset(
-    {
-        ProcessType.CHOP,
-        ProcessType.SLICE,
-        ProcessType.MINCE,
-        ProcessType.PEEL,
-        ProcessType.KNEAD,
-    }
-)
+class _ResourcePool:
+    """In-memory busy-until tracker keyed by resource id."""
 
+    def __init__(self, profile: UserProfile) -> None:
+        self._by_id: dict[str, Resource] = {}
+        for kind in (
+            "cook",
+            "burner",
+            "workstation",
+            "container",
+            "appliance",
+            "utensil",
+        ):
+            for r in getattr(profile, f"{kind}s" if kind != "cook" else "cooks"):
+                self._by_id[r.id] = r
+        self._busy_until: dict[str, float] = {rid: 0.0 for rid in self._by_id}
 
-def edge_requires_burner(edge: ProcessEdge) -> bool:
-    """An edge consumes a burner iff it lists a heat-source tool.
+    def candidates_for(self, req: ResourceRequirement) -> list[Resource]:
+        """All resources matching ``req.kind`` and optional ``name_hint``."""
+        out: list[Resource] = []
+        for r in self._by_id.values():
+            if r.kind != req.kind:
+                continue
+            if req.name_hint is not None and not _matches_name_hint(
+                r.name, req.name_hint
+            ):
+                continue
+            out.append(r)
+        return out
 
-    The parser/LLM is responsible for adding the heat source to
-    ``tools_required`` whenever heat is involved. This keeps the
-    scheduler purely declarative and avoids inferring resources from
-    action names alone.
-    """
-    return any(t.kind == ToolKind.HEAT_SOURCE for t in edge.tools_required)
+    def earliest_slot(
+        self, req: ResourceRequirement, candidates: list[Resource]
+    ) -> tuple[Resource, float] | None:
+        """Pick the resource whose busy_until is smallest. Returns
+        ``(resource, earliest_start)`` or ``None`` if no candidate exists."""
+        if not candidates:
+            return None
+        best = min(candidates, key=lambda r: self._busy_until[r.id])
+        return best, self._busy_until[best.id]
 
-
-def edge_requires_workstation(edge: ProcessEdge) -> bool:
-    """Knife / prep counter actions require the workstation."""
-    return edge.action in WORKSTATION_ACTIONS
-
-
-def edge_requires_cook(edge: ProcessEdge) -> bool:
-    """Any edge with non-zero attention demand consumes the cook briefly."""
-    return edge.attentive_min > 0.0
-
-
-def named_container_tools(edge: ProcessEdge) -> list[Tool]:
-    """Return tools that must be reserved exclusively for ``duration_min``.
-
-    Heat sources are excluded — they are tracked via the burner pool.
-    Utensils (knives, chopsticks) are excluded because their use is too
-    short to meaningfully contend in PoC-scale recipes.
-    """
-    return [
-        t
-        for t in edge.tools_required
-        if t.kind in {ToolKind.CONTAINER, ToolKind.APPLIANCE}
-    ]
+    def reserve(self, resource: Resource, start: float, end: float) -> None:
+        # busy_until tracks the latest end across reservations
+        self._busy_until[resource.id] = max(self._busy_until[resource.id], end)
 
 
 # ---------------------------------------------------------------------------
@@ -96,10 +93,6 @@ def named_container_tools(edge: ProcessEdge) -> list[Tool]:
 
 
 def _build_edge_dag(dag: RecipeDAG) -> nx.DiGraph:
-    """Edge-level DAG: ``A -> B`` iff ``A.to_node ∈ B.from_nodes``.
-
-    Nodes carry ``duration`` for downstream critical-path calculations.
-    """
     edges_producing: dict[str, str] = {e.to_node: e.id for e in dag.edges}
     g: nx.DiGraph = nx.DiGraph()
     for e in dag.edges:
@@ -118,11 +111,6 @@ def _build_edge_dag(dag: RecipeDAG) -> nx.DiGraph:
 
 
 def compute_critical_path(dag: RecipeDAG) -> list[str]:
-    """Edges on the longest dependency chain weighted by ``duration_min``.
-
-    Returns the chain as ordered edge IDs, source-first. Independent of
-    resource constraints: this is the inherent recipe bottleneck.
-    """
     g = _build_edge_dag(dag)
     if g.number_of_nodes() == 0:
         return []
@@ -157,73 +145,60 @@ def compute_critical_path(dag: RecipeDAG) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def schedule(dag: RecipeDAG, constraints: Constraints) -> Schedule:
-    """Greedy list scheduling against the four resource pools.
+class SchedulingError(RuntimeError):
+    """Raised when an edge demands a resource kind/name the profile lacks."""
 
-    Returns a Schedule whose ``steps`` are ordered topologically. Each
-    ``ScheduledStep.parallel_with`` lists the IDs of edges that overlap
-    in wall-clock time with this one.
-    """
+
+def schedule(dag: RecipeDAG, constraints: Constraints) -> Schedule:
+    """Allocate each edge's resource_uses against the profile's pools."""
     profile = constraints.profile
     g = _build_edge_dag(dag)
     edges_by_id = {e.id: e for e in dag.edges}
-
-    # Resource pools — one float per slot, holding "busy until" time
-    cook_pool: list[float] = [0.0] * max(profile.num_cooks, 1)
-    burner_pool: list[float] = [0.0] * max(profile.burners_count, 0)
-    workstation_pool: list[float] = [0.0] * max(profile.workstation_count, 0)
-    container_busy: dict[str, float] = {}
+    pool = _ResourcePool(profile)
 
     edge_start: dict[str, float] = {}
     edge_end: dict[str, float] = {}
+    edge_assignments: dict[str, list[str]] = {}
     topo_order = list(nx.topological_sort(g))
 
     for eid in topo_order:
         edge = edges_by_id[eid]
-
-        # 1. Predecessor edges must have completed
         prereq_end = max(
             (edge_end[p] for p in g.predecessors(eid)),
             default=0.0,
         )
 
-        # 2. Each required resource pool must have a free slot
-        candidate_starts: list[float] = [prereq_end]
-
-        if edge_requires_cook(edge) and cook_pool:
-            candidate_starts.append(min(cook_pool))
-        if edge_requires_burner(edge):
-            if not burner_pool:
-                raise ValueError(
-                    f"Edge {edge.id!r} requires a burner but the profile has none "
-                    f"(burners_count=0)"
+        # For each requirement, find the earliest slot. Constrain the
+        # edge's start so that *every* requirement can begin at its
+        # ``start_offset_min`` after the edge's start.
+        candidates_per_req: list[tuple[ResourceRequirement, Resource, float]] = []
+        for req in edge.resource_uses:
+            cands = pool.candidates_for(req)
+            if not cands:
+                raise SchedulingError(
+                    f"Edge {edge.id!r}: no resource of kind={req.kind.value} "
+                    f"name_hint={req.name_hint!r} available in profile"
                 )
-            candidate_starts.append(min(burner_pool))
-        if edge_requires_workstation(edge) and workstation_pool:
-            candidate_starts.append(min(workstation_pool))
-        for tool in named_container_tools(edge):
-            candidate_starts.append(container_busy.get(tool.name, 0.0))
+            chosen, free_at = pool.earliest_slot(req, cands)
+            # The edge start must be such that free_at ≤ start + start_offset
+            min_start_for_req = free_at - req.start_offset_min
+            candidates_per_req.append((req, chosen, min_start_for_req))
 
-        start = max(candidate_starts)
+        start = max([prereq_end] + [s for _, _, s in candidates_per_req])
         end = start + edge.duration_min
 
-        # 3. Allocate
-        if edge_requires_cook(edge) and cook_pool:
-            slot = cook_pool.index(min(cook_pool))
-            cook_pool[slot] = start + edge.attentive_min
-        if edge_requires_burner(edge):
-            slot = burner_pool.index(min(burner_pool))
-            burner_pool[slot] = end
-        if edge_requires_workstation(edge) and workstation_pool:
-            slot = workstation_pool.index(min(workstation_pool))
-            workstation_pool[slot] = start + edge.attentive_min
-        for tool in named_container_tools(edge):
-            container_busy[tool.name] = end
+        # Reserve
+        assignments: list[str] = []
+        for req, chosen, _ in candidates_per_req:
+            r_start = start + req.start_offset_min
+            r_end = r_start + req.hold_duration_min
+            pool.reserve(chosen, r_start, r_end)
+            assignments.append(chosen.id)
 
         edge_start[eid] = start
         edge_end[eid] = end
+        edge_assignments[eid] = assignments
 
-    # 4. Build ScheduledStep records, computing parallel_with
     intervals = [(eid, edge_start[eid], edge_end[eid]) for eid in topo_order]
 
     def overlapping_with(eid: str, s: float, e: float) -> list[str]:
@@ -238,6 +213,7 @@ def schedule(dag: RecipeDAG, constraints: Constraints) -> Schedule:
             edge_id=eid,
             start_min=edge_start[eid],
             end_min=edge_end[eid],
+            assigned_resource_ids=edge_assignments[eid],
             parallel_with=overlapping_with(eid, edge_start[eid], edge_end[eid]),
         )
         for eid in topo_order
@@ -251,3 +227,14 @@ def schedule(dag: RecipeDAG, constraints: Constraints) -> Schedule:
         total_duration_min=total,
         critical_path_edge_ids=cp,
     )
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compat shim for legacy module imports (now no-op)
+# ---------------------------------------------------------------------------
+
+
+def edge_requires_burner(edge: ProcessEdge) -> bool:
+    from ..schemas import ResourceKind  # noqa: PLC0415
+
+    return any(u.kind == ResourceKind.BURNER for u in edge.resource_uses)

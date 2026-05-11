@@ -1,35 +1,43 @@
-"""Proposer: generate substitution candidates for violating edges.
+"""Proposer: generate substitution candidates for an edge.
 
-Hybrid module that combines two paths:
+Each violation refers to one ``ResourceRequirement`` on an edge that
+the user cannot satisfy. The proposer looks up alternative
+``ToolOption`` patterns for the edge's ``action`` and rebuilds the
+edge's ``resource_uses`` with the chosen option's pattern, scaled by
+its ``time_factor``.
 
-1. **Table lookup** (fast, deterministic): query ``tool_use_table`` for
-   the edge's ``ProcessType``, filter by what the user owns, and return
-   each compatible option as a SubstitutionCandidate.
+Two paths:
 
-2. **LLM fallback** (slow, exploratory): only invoked when the table
-   has no compatible options. The LLM proposes alternatives, which are
-   filtered by ownership and **written back to the table** so future
-   lookups for the same action become deterministic. This is the data-
-   layer learning mechanism described in
-   ``knowledge/llm-as-bounded-module.md``.
+1. **Table lookup** (deterministic): all alternatives in
+   ``tool_use_table`` are tried, kept only if the user can satisfy
+   every spec inside.
 
-Output is a list of :class:`SubstitutionCandidate`, each containing a
-``replacement_edge`` that preserves DAG topology (same ``id``,
-``from_nodes``, ``to_node``, ``action``) but updates ``tools_required``
-and durations to reflect the substitute tool's profile.
+2. **LLM fallback** (only when no table hit): the LLM is asked to
+   propose new options; valid ones (with all specs satisfiable) are
+   written back to the table for future deterministic lookups.
+
+One candidate per option (capped at MAX_CANDIDATES). The candidate's
+``replacement_edge`` preserves the original edge's id/from_nodes/
+to_node/action — only ``description``, ``duration_min``, and
+``resource_uses`` change.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from ..data_io.tool_use_table import add_entry, find_compatible, is_tool_owned
+from ..data_io.tool_use_table import (
+    add_entry,
+    find_compatible,
+    is_option_compatible,
+)
 from ..llm import LLMClient
 from ..schemas import (
     ConstraintViolation,
     ProcessEdge,
+    ResourceRequirement,
+    ResourceSpec,
     SubstitutionCandidate,
-    ToolKind,
     ToolOption,
     ToolUseTable,
     UserProfile,
@@ -39,35 +47,28 @@ PROPOSER_LABEL = "proposer"
 MAX_CANDIDATES = 3
 
 
-# ---------------------------------------------------------------------------
-# LLM I/O schema
-# ---------------------------------------------------------------------------
-
-
 class LLMProposal(BaseModel):
-    """LLM output schema: a small set of tool substitution proposals."""
+    """LLM output schema."""
 
     candidates: list[ToolOption] = Field(default_factory=list)
 
 
 SYSTEM_PROMPT = """\
-You are a cooking expert proposing tool substitutions.
+You are a cooking expert. A recipe step requires a resource the user does
+not have. Propose 1-3 alternative ways to perform the same action using
+only resource kinds that the user has access to.
 
-A recipe step requires a tool the user does not have. Propose 1-3
-alternative ways to perform the same action using only the user's
-available tools.
-
-For each candidate:
-- tool: { name (Japanese), kind (heat_source|container|utensil|appliance), attributes }
-- time_factor: relative time vs the original tool (1.0 = same, 1.2 = 20% slower)
+Each candidate is a ``ToolOption`` consisting of:
+- label: short Japanese description (e.g., "片手鍋+コンロ")
+- resources: list of {kind, name_hint, relative_duration} where:
+    kind ∈ {cook, burner, workstation, container, appliance, utensil}
+    name_hint: specific resource name if relevant (e.g., "片手鍋")
+    relative_duration: 0.0–1.0 — what fraction of the edge's total duration
+      this resource is busy. cook tends to be fraction-only for simmering.
+- time_factor: multiplier on the recipe's baseline duration_min (1.0 = same)
 - quality_factor: relative quality (1.0 = same, 0.9 = slightly worse)
-- constraints: optional limits (e.g., {"max_volume_ml": 500})
-- confidence: 0.0-1.0
 
-Constraints:
-- Prefer the user's existing tools (their exact names if possible).
-- Prefer minimal time and quality degradation.
-- Output JSON only, conforming to {"candidates": [...]}.
+Output JSON only: {"candidates": [...]}.
 """
 
 
@@ -76,17 +77,35 @@ def _build_prompt(
     violation: ConstraintViolation,
     profile: UserProfile,
 ) -> str:
-    owned = ", ".join(f"{t.name}({t.kind.value})" for t in profile.tools_owned)
-    missing = ", ".join(violation.missing) if violation.missing else "(none)"
+    owned_summary = "\n".join(
+        f"- {kind}: "
+        + ", ".join(r.name for r in pool)
+        for kind, pool in [
+            ("cook", profile.cooks),
+            ("burner", profile.burners),
+            ("workstation", profile.workstations),
+            ("container", profile.containers),
+            ("appliance", profile.appliances),
+            ("utensil", profile.utensils),
+        ]
+        if pool
+    )
+    current_uses = ", ".join(
+        f"{u.kind.value}({u.name_hint or '*'},{u.hold_duration_min}m)"
+        for u in edge.resource_uses
+    )
+    missing_str = f"{violation.missing_kind.value}/{violation.missing_name_hint or '*'}"
     return f"""\
 Recipe step: {edge.description}
 Action: {edge.action.value}
-Original tools: {[t.name for t in edge.tools_required]}
-Missing tools (user lacks): {missing}
-User's available tools: {owned}
-Original duration: {edge.duration_min} min, attentive: {edge.attentive_min} min
+Current resource uses: {current_uses}
+Missing resource (user lacks): {missing_str}
+Original duration: {edge.duration_min} min
 
-Propose 1-3 alternative ways to perform this step using only the user's tools."""
+User's available resources:
+{owned_summary}
+
+Propose 1-3 alternative ToolOptions using only resources the user has."""
 
 
 # ---------------------------------------------------------------------------
@@ -94,62 +113,56 @@ Propose 1-3 alternative ways to perform this step using only the user's tools.""
 # ---------------------------------------------------------------------------
 
 
+def _spec_to_requirement(
+    spec: ResourceSpec, new_duration: float
+) -> ResourceRequirement:
+    hold = new_duration * spec.relative_duration
+    return ResourceRequirement(
+        kind=spec.kind,
+        name_hint=spec.name_hint,
+        hold_duration_min=hold,
+        start_offset_min=0.0,
+    )
+
+
 def _build_replacement_edge(
     original: ProcessEdge,
-    opt: ToolOption,
-    missing_names: list[str],
+    option: ToolOption,
 ) -> ProcessEdge:
-    """Construct a replacement edge that swaps missing tools for ``opt.tool``.
-
-    Tools listed in ``original.tools_required`` whose name appears in
-    ``missing_names`` are dropped; ``opt.tool`` is appended. Other tools
-    are preserved by default.
-
-    Heuristic: if the substitute is a self-contained appliance (e.g.
-    microwave, electric kettle), external heat sources are dropped from
-    the preserved set — using a microwave does not also occupy a burner.
-    """
-    missing_set = set(missing_names)
-    preserved = [t for t in original.tools_required if t.name not in missing_set]
-
-    if opt.tool.kind == ToolKind.APPLIANCE:
-        preserved = [t for t in preserved if t.kind != ToolKind.HEAT_SOURCE]
-
-    new_tools = preserved + [opt.tool]
-    new_duration = original.duration_min * opt.time_factor
-    # Scale attentive proportionally but never above the new total duration
-    new_attentive = min(original.attentive_min * opt.time_factor, new_duration)
+    new_duration = original.duration_min * option.time_factor
+    new_uses = [_spec_to_requirement(spec, new_duration) for spec in option.resources]
 
     new_description = original.description
-    for missing in missing_names:
-        if missing in new_description:
-            new_description = new_description.replace(missing, opt.tool.name)
-            break  # only first occurrence to avoid weird substitutions
+    # Replace any explicit ``やかん`` etc. in the description with the
+    # primary container name from the new option, if obvious.
+    if option.label:
+        new_description = f"{original.description.split('（')[0]}（{option.label}で代替）"
 
     return original.model_copy(
         update={
-            "tools_required": new_tools,
             "duration_min": new_duration,
-            "attentive_min": new_attentive,
+            "resource_uses": new_uses,
             "description": new_description,
         }
     )
 
 
 def _option_to_candidate(
-    opt: ToolOption,
+    option: ToolOption,
     edge: ProcessEdge,
-    missing_names: list[str],
+    violation: ConstraintViolation,
 ) -> SubstitutionCandidate:
-    replacement = _build_replacement_edge(edge, opt, missing_names)
+    replacement = _build_replacement_edge(edge, option)
     time_delta = replacement.duration_min - edge.duration_min
-    quality_delta = opt.quality_factor - 1.0
+    quality_delta = option.quality_factor - 1.0
 
     sign_t = "+" if time_delta >= 0 else ""
     sign_q = "+" if quality_delta >= 0 else ""
-    missing_str = "・".join(missing_names) if missing_names else "原器具"
+    missing_repr = (
+        f"{violation.missing_kind.value}/{violation.missing_name_hint or '*'}"
+    )
     rationale = (
-        f"{missing_str} の代替として {opt.tool.name} を使用"
+        f"{missing_repr} の代替として {option.label} を使用"
         f"（時間 {sign_t}{time_delta:.1f}分、品質 {sign_q}{quality_delta:.2f}）"
     )
 
@@ -168,11 +181,7 @@ def _option_to_candidate(
 
 
 class RecipeProposer:
-    """Generate substitution candidates for a violating edge.
-
-    The provided ``table`` is **mutated** when LLM discovers a new
-    compatible combination — this is the data-layer learning mechanism.
-    """
+    """Generate substitution candidates. Mutates the table on LLM discovery."""
 
     def __init__(
         self,
@@ -190,13 +199,20 @@ class RecipeProposer:
         edge: ProcessEdge,
         profile: UserProfile,
     ) -> list[SubstitutionCandidate]:
-        # 1. Table lookup
-        existing = find_compatible(self.table, edge.action, profile.tools_owned)
-        existing = [opt for opt in existing if opt.tool.name not in set(violation.missing)]
+        owned = (
+            profile.cooks
+            + profile.burners
+            + profile.workstations
+            + profile.containers
+            + profile.appliances
+            + profile.utensils
+        )
 
+        # 1. Table lookup
+        existing = find_compatible(self.table, edge.action, owned)
         if existing:
             return [
-                _option_to_candidate(opt, edge, violation.missing)
+                _option_to_candidate(opt, edge, violation)
                 for opt in existing[:MAX_CANDIDATES]
             ]
 
@@ -205,14 +221,13 @@ class RecipeProposer:
 
         candidates: list[SubstitutionCandidate] = []
         for opt in proposal.candidates:
-            if not is_tool_owned(opt.tool, profile.tools_owned):
+            if not is_option_compatible(opt, owned):
                 continue
-            # Persist the discovery to the table for future deterministic lookups
-            opt_with_source = opt.model_copy(
+            tagged = opt.model_copy(
                 update={"source": opt.source if opt.source != "seed" else "llm"}
             )
-            add_entry(self.table, edge.action, opt_with_source)
-            candidates.append(_option_to_candidate(opt_with_source, edge, violation.missing))
+            add_entry(self.table, edge.action, tagged)
+            candidates.append(_option_to_candidate(tagged, edge, violation))
 
         return candidates[:MAX_CANDIDATES]
 

@@ -34,17 +34,17 @@ _TABLE_PATH = _DATA_DIR / "tool_use_table.json"
 _RECIPES_DIR = _DATA_DIR / "recipes"
 
 
-def _print_kind_grouped_tools(tools: list, title: str = "## 使うもの") -> None:
+def _print_kind_grouped_resources(resources: list, title: str = "## 必要なもの") -> None:
     print(f"\n{title}")
-    if not tools:
+    if not resources:
         print("  (なし)")
         return
     current_kind = None
-    for tool in tools:
-        if tool.kind != current_kind:
-            print(f"\n  ### {tool.kind.value}")
-            current_kind = tool.kind
-        print(f"  - {tool.name}")
+    for resource in resources:
+        if resource.kind != current_kind:
+            print(f"\n  ### {resource.kind.value}")
+            current_kind = resource.kind
+        print(f"  - {resource.name}")
 
 
 def _print_rendered_recipe(rendered, profile, original_dag: RecipeDAG | None = None) -> None:
@@ -75,7 +75,7 @@ def _print_rendered_recipe(rendered, profile, original_dag: RecipeDAG | None = N
     for ing in rendered.shopping_list.ingredients:
         print(f"  - {ing.name}")
 
-    _print_kind_grouped_tools(rendered.shopping_list.tools_needed)
+    _print_kind_grouped_resources(rendered.shopping_list.resources_needed)
 
     print("\n## DAG (Mermaid)")
     print("```mermaid")

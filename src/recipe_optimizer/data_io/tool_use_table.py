@@ -1,12 +1,11 @@
 """Load, persist, and operate on the tool-use table.
 
-The table is the data-layer learning store: at startup it holds the
-seeded knowledge; the proposer module appends new combinations
-discovered by the LLM; over time the schedule/usage records can adjust
-``time_factor`` per user.
+The table is the data-layer learning store: at startup it holds seeded
+knowledge; the proposer module appends new combinations discovered by
+the LLM; over time, usage logs can adjust ``time_factor`` per user.
 
-Behaviour stays in this module as free functions; ``ToolUseTable`` in
-schemas.py is a pure data model.
+Behaviour stays here as free functions; ``ToolUseTable`` is a pure data
+model in ``schemas.py``.
 """
 
 from __future__ import annotations
@@ -14,7 +13,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..schemas import ProcessType, Tool, ToolOption, ToolUseTable
+from ..schemas import (
+    ProcessType,
+    Resource,
+    ResourceKind,
+    ResourceSpec,
+    ToolOption,
+    ToolUseTable,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -23,11 +29,6 @@ from ..schemas import ProcessType, Tool, ToolOption, ToolUseTable
 
 
 def load_table(path: str | Path) -> ToolUseTable:
-    """Load a ToolUseTable from JSON.
-
-    Top-level cosmetic keys (e.g. ``_schema_note``) are ignored by
-    Pydantic's default ``extra="ignore"``.
-    """
     p = Path(path)
     with p.open(encoding="utf-8") as fp:
         data = json.load(fp)
@@ -35,7 +36,6 @@ def load_table(path: str | Path) -> ToolUseTable:
 
 
 def save_table(table: ToolUseTable, path: str | Path) -> None:
-    """Save a ToolUseTable to a JSON file."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("w", encoding="utf-8") as fp:
@@ -57,50 +57,42 @@ def lookup(table: ToolUseTable, process: ProcessType | str) -> list[ToolOption]:
     return list(table.entries.get(_key(process), []))
 
 
-def is_tool_owned(option_tool: Tool, owned: list[Tool]) -> bool:
-    """Whether ``option_tool`` is satisfied by the user's owned tools.
+def _matches_name_hint(resource_name: str, name_hint: str) -> bool:
+    """Same matching policy as the old tool-name matcher.
 
-    Composite tools written as ``"包丁+まな板"`` require **all** parts
-    to be owned. Each part matches by:
-
-    1. Exact name equality.
-    2. One-way substring containment (e.g., owned ``"フライパン"`` matches
-       option spec ``"深型フライパン"``, and vice versa). This handles
-       small variations between seed-table names and concrete user
-       inventory names without resorting to embedding similarity.
+    Exact equality, or one-way substring containment ("片手鍋" matches
+    "鍋" if the user owns "片手鍋", and "片手鍋" satisfies a hint of
+    "鍋"). This absorbs minor wording variation between the seed table
+    and concrete user inventory names.
     """
-    owned_names = {t.name for t in owned}
-    parts = [p.strip() for p in option_tool.name.split("+")]
-    return all(_part_matches_owned(part, owned_names) for part in parts)
-
-
-def _part_matches_owned(part: str, owned_names: set[str]) -> bool:
-    if part in owned_names:
+    if resource_name == name_hint:
         return True
-    for owned_name in owned_names:
-        if part in owned_name or owned_name in part:
-            return True
-    return False
+    return resource_name in name_hint or name_hint in resource_name
 
 
-def filter_by_owned(
-    options: list[ToolOption], owned_tools: list[Tool]
-) -> list[ToolOption]:
-    """Keep only options whose required tool is satisfied by ``owned_tools``."""
-    return [opt for opt in options if is_tool_owned(opt.tool, owned_tools)]
+def can_satisfy_spec(spec: ResourceSpec, owned: list[Resource]) -> bool:
+    """Whether the user owns at least one resource matching ``spec``."""
+    pool = [r for r in owned if r.kind == spec.kind]
+    if not pool:
+        return False
+    if spec.name_hint is None:
+        return True
+    return any(_matches_name_hint(r.name, spec.name_hint) for r in pool)
+
+
+def is_option_compatible(option: ToolOption, owned: list[Resource]) -> bool:
+    """All ``ResourceSpec`` entries in the option must be satisfiable."""
+    return all(can_satisfy_spec(spec, owned) for spec in option.resources)
 
 
 def find_compatible(
     table: ToolUseTable,
     process: ProcessType | str,
-    owned_tools: list[Tool],
+    owned: list[Resource],
 ) -> list[ToolOption]:
-    """``lookup`` ∘ ``filter_by_owned``, sorted by quality_factor desc.
-
-    This is the primary read API used by the proposer module.
-    """
+    """``lookup`` + filter to options the user can perform, ranked by quality."""
     options = lookup(table, process)
-    compatible = filter_by_owned(options, owned_tools)
+    compatible = [opt for opt in options if is_option_compatible(opt, owned)]
     compatible.sort(
         key=lambda o: (o.quality_factor, -o.time_factor, o.confidence),
         reverse=True,
@@ -109,7 +101,7 @@ def find_compatible(
 
 
 # ---------------------------------------------------------------------------
-# Mutations (used by proposer when LLM discovers new combinations)
+# Mutations
 # ---------------------------------------------------------------------------
 
 
@@ -118,16 +110,13 @@ def add_entry(
     process: ProcessType | str,
     option: ToolOption,
 ) -> bool:
-    """Append a new ToolOption.
-
-    Returns:
-        True if appended, False if a duplicate (same tool name) already exists.
-    """
+    """Append a new option. Returns False if an option with the same
+    label already exists for this process."""
     key = _key(process)
     if key not in table.entries:
         table.entries[key] = []
-    existing_names = {opt.tool.name for opt in table.entries[key]}
-    if option.tool.name in existing_names:
+    existing_labels = {opt.label for opt in table.entries[key]}
+    if option.label in existing_labels:
         return False
     table.entries[key].append(option)
     return True
@@ -136,18 +125,13 @@ def add_entry(
 def update_time_factor(
     table: ToolUseTable,
     process: ProcessType | str,
-    tool_name: str,
+    option_label: str,
     new_factor: float,
 ) -> bool:
-    """Adjust the time_factor of an existing entry (used after observing
-    real cooking durations).
-
-    Returns:
-        True if the entry was found and updated, False otherwise.
-    """
+    """Adjust the time_factor of an existing option (post-cook calibration)."""
     key = _key(process)
     for opt in table.entries.get(key, []):
-        if opt.tool.name == tool_name:
+        if opt.label == option_label:
             opt.time_factor = new_factor
             return True
     return False

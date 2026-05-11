@@ -1,7 +1,17 @@
 """Pydantic data models that define module boundaries.
 
-Every LLM/algorithm module accepts and returns these typed objects.
-This is the central discipline that controls LLM output variance.
+The data layer is centred on **explicit resource allocation**:
+
+- ``Resource`` is something the user owns with identity (a specific
+  burner, a specific pot). Resources are organised in kind-based pools
+  on ``UserProfile``.
+- ``ResourceRequirement`` is an edge's reservation on a resource slot
+  for a portion of its execution. Edges that simmer for 2 minutes but
+  only need the cook's attention for 30 seconds say so via two
+  requirements with different ``hold_duration_min`` values.
+- Critical path, scheduler, checker, and proposer all read the same
+  ``resource_uses`` list — no implicit per-kind logic is sprinkled
+  across modules anymore.
 """
 
 from __future__ import annotations
@@ -13,38 +23,46 @@ from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
-# Primitives
+# Resource model
 # ---------------------------------------------------------------------------
 
 
-class Quantity(BaseModel):
-    """A measured amount of an ingredient."""
+class ResourceKind(str, Enum):
+    """Coarse pool the resource belongs to.
 
-    amount: float | None = None  # None means "to taste" / "適量"
-    unit: str = ""  # "g", "ml", "個", "大さじ", ...
-    note: str = ""  # free-form qualifier ("好みで")
+    Each pool is managed independently by the scheduler.
+    """
 
-
-class Ingredient(BaseModel):
-    name: str
-    quantity: Quantity = Field(default_factory=Quantity)
-    prep_state: str = "raw"  # raw | washed | cut | cooked | ...
-
-
-class ToolKind(str, Enum):
-    """Coarse classification used by the substitution layer."""
-
-    HEAT_SOURCE = "heat_source"  # コンロ口、IH、電子レンジ、オーブン
-    CONTAINER = "container"  # 鍋、フライパン、ボウル、ケトル
-    UTENSIL = "utensil"  # 包丁、菜箸、おたま
-    APPLIANCE = "appliance"  # 炊飯器、ミキサー、トースター
+    COOK = "cook"
+    BURNER = "burner"  # コンロ・IH（実体は1口ずつ独立）
+    WORKSTATION = "workstation"  # 包丁作業台
+    CONTAINER = "container"  # 鍋・フライパン・ボウル
+    APPLIANCE = "appliance"  # 電子レンジ・オーブン・炊飯器
+    UTENSIL = "utensil"  # 包丁・菜箸（PoC ではプール非考慮）
 
 
-class Tool(BaseModel):
-    name: str
-    kind: ToolKind
+class Resource(BaseModel):
+    """A finite, identity-bearing resource owned by the user."""
+
+    id: str  # globally unique within a profile
+    kind: ResourceKind
+    name: str  # human-readable (片手鍋, コンロ口1, 電子レンジ, ...)
     attributes: dict[str, Any] = Field(default_factory=dict)
-    # 例: {"capacity_ml": 2000, "has_lid": true, "burners": 2}
+
+
+class ResourceRequirement(BaseModel):
+    """A reservation on one resource slot during an edge's execution.
+
+    ``hold_duration_min`` is how long this slot stays busy; it must not
+    exceed the parent edge's ``duration_min``. ``start_offset_min``
+    allows resources to be acquired or released part-way through (e.g.,
+    a cook is needed only at the start of a long simmer).
+    """
+
+    kind: ResourceKind
+    name_hint: str | None = None  # 表記揺れ吸収用（"片手鍋" 等）
+    hold_duration_min: float
+    start_offset_min: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -53,11 +71,7 @@ class Tool(BaseModel):
 
 
 class ProcessType(str, Enum):
-    """Canonical action vocabulary. The tool_use_table is keyed on these.
-
-    The parser maps natural language verbs to these. New types are added
-    when LLM proposer discovers them and we promote them to the canonical set.
-    """
+    """Canonical action vocabulary keyed in ``ToolUseTable``."""
 
     # 切る系
     CHOP = "chop"
@@ -79,7 +93,7 @@ class ProcessType(str, Enum):
     BEAT = "beat"
     KNEAD = "knead"
     # その他
-    REST = "rest"  # 待つ・冷ます
+    REST = "rest"
     SERVE = "serve"
     UNKNOWN = "unknown"
 
@@ -89,26 +103,25 @@ class ProcessType(str, Enum):
 # ---------------------------------------------------------------------------
 
 
-class GoalNode(BaseModel):
-    """A goal state: an intermediate or final result.
+class Ingredient(BaseModel):
+    name: str
+    quantity_text: str = ""  # raw text from the recipe ("1/2枚", "大さじ1")
 
-    Examples:
-        - "切られた玉ねぎ"
-        - "沸騰した湯500ml"
-        - "完成した親子丼"
-    """
+
+class GoalNode(BaseModel):
+    """A state of ingredients reached at some point in the recipe."""
 
     id: str
     description: str
-    ingredients_present: list[Ingredient] = Field(default_factory=list)
     is_final: bool = False
 
 
 class ProcessEdge(BaseModel):
-    """A process: an action that transforms input nodes into an output node.
+    """A cooking action transforming input states into a single output state.
 
-    The directed-acyclic structure is stored in networkx; this object is
-    the edge attribute payload.
+    Resource needs are declared in ``resource_uses``. Each entry pins a
+    specific kind of resource (and optionally a name hint) busy for a
+    portion of the edge's wall-clock duration.
     """
 
     id: str
@@ -116,37 +129,43 @@ class ProcessEdge(BaseModel):
     to_node: str
 
     action: ProcessType
-    description: str  # human-readable step text
+    description: str
 
-    tools_required: list[Tool] = Field(default_factory=list)
-    duration_min: float = 1.0  # total wall time
-    attentive_min: float = 1.0  # time the cook cannot leave (<= duration_min)
+    duration_min: float = 1.0
+    resource_uses: list[ResourceRequirement] = Field(default_factory=list)
     parameters: dict[str, Any] = Field(default_factory=dict)
-    # 例: {"heat_level": "medium", "temperature_c": 180, "volume_ml": 500}
+
+    @model_validator(mode="after")
+    def _resource_uses_fit(self) -> "ProcessEdge":
+        eps = 1e-6
+        for use in self.resource_uses:
+            end = use.start_offset_min + use.hold_duration_min
+            if end > self.duration_min + eps:
+                raise ValueError(
+                    f"Edge {self.id!r}: resource_use ({use.kind.value}) ends at "
+                    f"{end} min, exceeding edge duration_min={self.duration_min}"
+                )
+            if use.start_offset_min < -eps:
+                raise ValueError(
+                    f"Edge {self.id!r}: negative start_offset_min on {use.kind.value}"
+                )
+            if use.hold_duration_min < -eps:
+                raise ValueError(
+                    f"Edge {self.id!r}: negative hold_duration_min on {use.kind.value}"
+                )
+        return self
 
 
 class RecipeDAG(BaseModel):
-    """Graph representation. The actual networkx.DiGraph lives in a wrapper class."""
-
     title: str
     servings: int = 1
     nodes: list[GoalNode]
     edges: list[ProcessEdge]
     final_node_id: str
-    raw_text: str = ""  # original recipe text for traceability
+    raw_text: str = ""
 
     @model_validator(mode="after")
     def _validate_dag_integrity(self) -> "RecipeDAG":
-        """Cross-field referential integrity.
-
-        - Node IDs must be unique
-        - Every edge.from_nodes / edge.to_node must reference an existing node
-        - final_node_id must be one of the nodes
-        - Edge IDs must be unique
-
-        Raising here causes ``LLMClient.generate_structured`` to retry the
-        LLM call with the validation error in the feedback turn.
-        """
         node_ids = {n.id for n in self.nodes}
         if len(node_ids) != len(self.nodes):
             raise ValueError("Duplicate node IDs in DAG")
@@ -164,28 +183,17 @@ class RecipeDAG(BaseModel):
             for from_id in edge.from_nodes:
                 if from_id not in node_ids:
                     raise ValueError(
-                        f"Edge {edge.id!r}: from_node '{from_id}' not found in nodes"
+                        f"Edge {edge.id!r}: from_node '{from_id}' not found"
                     )
             if edge.to_node not in node_ids:
                 raise ValueError(
-                    f"Edge {edge.id!r}: to_node '{edge.to_node}' not found in nodes"
+                    f"Edge {edge.id!r}: to_node '{edge.to_node}' not found"
                 )
-            if edge.attentive_min > edge.duration_min:
-                raise ValueError(
-                    f"Edge {edge.id!r}: attentive_min ({edge.attentive_min}) "
-                    f"exceeds duration_min ({edge.duration_min})"
-                )
-
         return self
 
 
 class RawRecipe(BaseModel):
-    """Unparsed recipe loaded from JSON (e.g. scraped from Cookpad).
-
-    This is the parser's input. Already lightly structured into ingredients
-    and steps lists, so the parser focuses on extracting cooking semantics
-    rather than handling free-form prose.
-    """
+    """Unparsed recipe loaded from JSON."""
 
     id: str
     title: str
@@ -198,7 +206,7 @@ class RawRecipe(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Constraints (user profile + session state)
+# User profile (resource pools)
 # ---------------------------------------------------------------------------
 
 
@@ -209,29 +217,39 @@ class SkillLevel(str, Enum):
 
 
 class UserProfile(BaseModel):
-    """Static-ish constraints captured at onboarding and refined over sessions."""
+    """Static constraints captured at onboarding.
+
+    Resources live in kind-keyed pools so the scheduler can take pool
+    length as capacity and individual ``Resource`` objects as slots.
+    """
 
     user_id: str
-    tools_owned: list[Tool]
-    burners_count: int = 2
-    num_cooks: int = 1  # human resource pool used for ``attentive_min`` of each edge
-    workstation_count: int = 1  # cutting/prep counter, consumed by chop/slice/mince/peel/knead
+    cooks: list[Resource] = Field(default_factory=list)
+    burners: list[Resource] = Field(default_factory=list)
+    workstations: list[Resource] = Field(default_factory=list)
+    containers: list[Resource] = Field(default_factory=list)
+    appliances: list[Resource] = Field(default_factory=list)
+    utensils: list[Resource] = Field(default_factory=list)
     skill_level: SkillLevel = SkillLevel.INTERMEDIATE
     skill_factors: dict[str, float] = Field(default_factory=dict)
-    # 例: {"chop": 1.3, "saute": 1.0}  # 平均比、>1 で遅い
     preferences: dict[str, Any] = Field(default_factory=dict)
-    # 例: {"avoid_deep_fry": true, "max_cleanup_items": 5}
+
+    def pool(self, kind: ResourceKind) -> list[Resource]:
+        return {
+            ResourceKind.COOK: self.cooks,
+            ResourceKind.BURNER: self.burners,
+            ResourceKind.WORKSTATION: self.workstations,
+            ResourceKind.CONTAINER: self.containers,
+            ResourceKind.APPLIANCE: self.appliances,
+            ResourceKind.UTENSIL: self.utensils,
+        }[kind]
 
 
 class SessionState(BaseModel):
-    """Dynamic state at the moment of recipe generation.
+    """Dynamic state — placeholder for the live cooking mode."""
 
-    For PoC we only consume the static portion (ingredients_available)
-    and assume kitchen is otherwise idle.
-    """
-
-    ingredients_available: list[Ingredient] = Field(default_factory=list)
-    tools_in_use: list[str] = Field(default_factory=list)  # tool names currently busy
+    ingredients_available: list[str] = Field(default_factory=list)
+    busy_resource_ids: list[str] = Field(default_factory=list)
     completed_edge_ids: list[str] = Field(default_factory=list)
     elapsed_min: float = 0.0
 
@@ -246,50 +264,56 @@ class Constraints(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ToolOption(BaseModel):
-    """One way to perform a given ProcessType."""
+class ResourceSpec(BaseModel):
+    """Relative-duration resource pattern stored in a ``ToolOption``.
 
-    tool: Tool
-    time_factor: float = 1.0  # relative to the canonical tool (1.0 = baseline)
-    quality_factor: float = 1.0  # 1.0 = no degradation
+    ``relative_duration`` is the fraction of the option's total duration
+    that this resource stays busy. 1.0 means "for the whole edge".
+    Held separately from concrete ``ResourceRequirement`` so that the
+    same pattern can be applied to recipes with different total
+    durations.
+    """
+
+    kind: ResourceKind
+    name_hint: str | None = None
+    relative_duration: float = 1.0
+
+
+class ToolOption(BaseModel):
+    """One alternative way to perform a given ProcessType."""
+
+    label: str
+    resources: list[ResourceSpec]
+    time_factor: float = 1.0  # multiplier on baseline duration
+    quality_factor: float = 1.0
     constraints: dict[str, Any] = Field(default_factory=dict)
-    # 例: {"max_volume_ml": 500, "requires_lid": true}
     confidence: float = 1.0
     source: str = "seed"  # seed | llm | user_feedback
 
 
 class ToolUseTable(BaseModel):
-    """Maps each ProcessType to a ranked list of compatible tools.
-
-    Persisted as JSON. The proposer module updates this when LLM
-    discovers new combinations not yet in the table.
-    """
-
     entries: dict[str, list[ToolOption]] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
-# Substitution / violation types
+# Violations / substitution
 # ---------------------------------------------------------------------------
 
 
 class ConstraintViolation(BaseModel):
-    """Marks a process edge that the user cannot execute as-is."""
-
     edge_id: str
-    reason: str  # "missing_tool" | "missing_ingredient" | "burner_unavailable"
-    missing: list[str] = Field(default_factory=list)  # tool names or ingredient names
+    reason: str  # "missing_resource"
+    missing_kind: ResourceKind
+    missing_name_hint: str | None = None
 
 
 class SubstitutionCandidate(BaseModel):
-    """A proposed replacement for a violation."""
-
     original_edge_id: str
     replacement_edge: ProcessEdge
     rationale: str
-    quality_delta: float = 0.0  # negative = degraded
+    quality_delta: float = 0.0
     time_delta_min: float = 0.0
-    score: float = 0.0  # selector fills this in
+    score: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +325,8 @@ class ScheduledStep(BaseModel):
     edge_id: str
     start_min: float
     end_min: float
-    parallel_with: list[str] = Field(default_factory=list)  # other edge_ids
+    assigned_resource_ids: list[str] = Field(default_factory=list)
+    parallel_with: list[str] = Field(default_factory=list)
 
 
 class Schedule(BaseModel):
@@ -316,17 +341,15 @@ class Schedule(BaseModel):
 
 
 class ShoppingList(BaseModel):
-    ingredients: list[Ingredient]
-    tools_needed: list[Tool]
+    ingredients: list[Ingredient] = Field(default_factory=list)
+    resources_needed: list[Resource] = Field(default_factory=list)
 
 
 class RenderedRecipe(BaseModel):
-    """Bundle of all three output formats for the PoC."""
-
     title: str
-    numbered_steps: list[str]  # ① 一般的な数字リスト
-    mermaid_dag: str  # ② 構造化DAG (mermaid記法)
-    shopping_list: ShoppingList  # ③ 使うものリスト
+    numbered_steps: list[str]
+    mermaid_dag: str
+    shopping_list: ShoppingList
     schedule: Schedule
-    optimized_dag: "RecipeDAG | None" = None  # post-substitution DAG for callers
+    optimized_dag: "RecipeDAG | None" = None
     substitutions_made: list[SubstitutionCandidate] = Field(default_factory=list)

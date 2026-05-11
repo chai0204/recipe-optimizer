@@ -29,7 +29,7 @@ def to_numbered_steps(dag: RecipeDAG, schedule: Schedule) -> list[str]:
     """Return one string per step, in chronological order.
 
     Format: ``"<n>. <description> (<duration>)"`` with optional
-    ``(並行)`` suffix when ``parallel_with`` is non-empty.
+    ``(並行可能)`` suffix when ``parallel_with`` is non-empty.
     """
     edges_by_id = {e.id: e for e in dag.edges}
     chronological = sorted(
@@ -40,6 +40,8 @@ def to_numbered_steps(dag: RecipeDAG, schedule: Schedule) -> list[str]:
     for i, step in enumerate(chronological, start=1):
         edge = edges_by_id[step.edge_id]
         duration_str = _format_minutes(edge.duration_min)
+        # Edges with non-empty parallel_with that are not pure serve actions
+        # benefit from a parallel marker.
         parallel_marker = " (並行可能)" if step.parallel_with else ""
         lines.append(f"{i}. {edge.description} ({duration_str}){parallel_marker}")
     return lines

@@ -1,4 +1,4 @@
-"""Tests for data_io.profile and data_io.tool_use_table."""
+"""Tests for data_io.profile and data_io.tool_use_table (resource model)."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import pytest
 
 from recipe_optimizer.data_io import (
     add_entry,
-    filter_by_owned,
+    can_satisfy_spec,
     find_compatible,
-    is_tool_owned,
+    is_option_compatible,
     load_profile,
     load_table,
     lookup,
@@ -20,9 +20,10 @@ from recipe_optimizer.data_io import (
 )
 from recipe_optimizer.schemas import (
     ProcessType,
+    Resource,
+    ResourceKind,
+    ResourceSpec,
     SkillLevel,
-    Tool,
-    ToolKind,
     ToolOption,
     ToolUseTable,
     UserProfile,
@@ -41,36 +42,36 @@ TABLE_PATH = REPO_ROOT / "data" / "tool_use_table.json"
 def test_load_profile_real_data():
     profile = load_profile(PROFILE_PATH)
     assert profile.user_id == "demo_user_01"
-    assert profile.burners_count == 2
     assert profile.skill_level == SkillLevel.INTERMEDIATE
+    assert len(profile.cooks) == 1
+    assert len(profile.burners) == 2
+    assert len(profile.workstations) == 1
 
-    names = {t.name for t in profile.tools_owned}
-    assert "片手鍋" in names
-    assert "両手鍋" in names
-    assert "フライパン" in names
-    assert "電子レンジ" in names
-    # Intentionally absent (used to trigger substitution logic in tests)
-    assert "やかん" not in names
-    assert "オーブン" not in names
-    assert "圧力鍋" not in names
+    container_names = {r.name for r in profile.containers}
+    assert "片手鍋" in container_names
+    assert "両手鍋" in container_names
+    assert "フライパン" in container_names
+    # Intentionally absent
+    assert "やかん" not in container_names
+    assert "圧力鍋" not in container_names
 
 
 def test_save_then_load_profile_round_trip(tmp_path):
     profile = UserProfile(
         user_id="round_trip",
-        tools_owned=[Tool(name="包丁", kind=ToolKind.UTENSIL)],
-        burners_count=3,
+        cooks=[Resource(id="c1", kind=ResourceKind.COOK, name="自分")],
+        containers=[Resource(id="p", kind=ResourceKind.CONTAINER, name="片手鍋")],
     )
     out = tmp_path / "p.json"
     save_profile(profile, out)
     loaded = load_profile(out)
     assert loaded.user_id == "round_trip"
-    assert loaded.burners_count == 3
-    assert loaded.tools_owned[0].name == "包丁"
+    assert len(loaded.cooks) == 1
+    assert loaded.containers[0].name == "片手鍋"
 
 
 # ---------------------------------------------------------------------------
-# Table I/O + lookup
+# Table I/O
 # ---------------------------------------------------------------------------
 
 
@@ -80,11 +81,10 @@ def test_load_table_real_data():
     assert "saute" in table.entries
     assert "chop" in table.entries
 
-    bw = table.entries["boil_water"]
-    bw_names = {opt.tool.name for opt in bw}
-    assert "やかん" in bw_names
-    assert "電子レンジ" in bw_names
-    assert "片手鍋" in bw_names
+    bw_labels = {opt.label for opt in table.entries["boil_water"]}
+    assert "やかん+コンロ" in bw_labels
+    assert "電子レンジ" in bw_labels
+    assert "片手鍋+コンロ" in bw_labels
 
 
 def test_lookup_known_and_unknown():
@@ -94,86 +94,77 @@ def test_lookup_known_and_unknown():
 
 
 # ---------------------------------------------------------------------------
-# is_tool_owned (matching logic)
+# can_satisfy_spec
 # ---------------------------------------------------------------------------
 
 
-def test_is_tool_owned_exact_match():
-    owned = [Tool(name="片手鍋", kind=ToolKind.CONTAINER)]
-    assert is_tool_owned(Tool(name="片手鍋", kind=ToolKind.CONTAINER), owned)
-    assert not is_tool_owned(Tool(name="両手鍋", kind=ToolKind.CONTAINER), owned)
+def test_can_satisfy_spec_exact_match():
+    owned = [Resource(id="p", kind=ResourceKind.CONTAINER, name="片手鍋")]
+    assert can_satisfy_spec(
+        ResourceSpec(kind=ResourceKind.CONTAINER, name_hint="片手鍋"), owned
+    )
+    assert not can_satisfy_spec(
+        ResourceSpec(kind=ResourceKind.CONTAINER, name_hint="両手鍋"), owned
+    )
 
 
-def test_is_tool_owned_substring_match():
-    """Owned 'フライパン' should satisfy option spec '深型フライパン' and vice versa."""
-    owned = [Tool(name="フライパン", kind=ToolKind.CONTAINER)]
-    assert is_tool_owned(Tool(name="深型フライパン", kind=ToolKind.CONTAINER), owned)
-    assert is_tool_owned(Tool(name="フライパン", kind=ToolKind.CONTAINER), owned)
+def test_can_satisfy_spec_substring_match():
+    """Owned 'フライパン' should satisfy 'フライパン' or '深型フライパン'."""
+    owned = [Resource(id="p", kind=ResourceKind.CONTAINER, name="フライパン")]
+    assert can_satisfy_spec(
+        ResourceSpec(kind=ResourceKind.CONTAINER, name_hint="深型フライパン"), owned
+    )
 
 
-def test_is_tool_owned_composite_all_required():
-    owned = [
-        Tool(name="包丁", kind=ToolKind.UTENSIL),
-        Tool(name="まな板", kind=ToolKind.UTENSIL),
-    ]
-    composite = Tool(name="包丁+まな板", kind=ToolKind.UTENSIL)
-    assert is_tool_owned(composite, owned)
+def test_can_satisfy_spec_no_hint_any_kind_works():
+    """If name_hint is None, any resource of the right kind suffices."""
+    owned = [Resource(id="b1", kind=ResourceKind.BURNER, name="コンロ口1")]
+    assert can_satisfy_spec(ResourceSpec(kind=ResourceKind.BURNER), owned)
+    assert not can_satisfy_spec(ResourceSpec(kind=ResourceKind.APPLIANCE), owned)
 
-    owned_partial = [Tool(name="包丁", kind=ToolKind.UTENSIL)]
-    assert not is_tool_owned(composite, owned_partial)
+
+def test_can_satisfy_spec_returns_false_when_pool_empty():
+    assert not can_satisfy_spec(
+        ResourceSpec(kind=ResourceKind.APPLIANCE, name_hint="電子レンジ"), []
+    )
 
 
 # ---------------------------------------------------------------------------
-# filter_by_owned + find_compatible
+# is_option_compatible + find_compatible
 # ---------------------------------------------------------------------------
 
 
-def test_find_compatible_filters_unowned_for_boil_water():
+def test_find_compatible_filters_unowned_resources():
+    """User lacks やかん and 電気ケトル → those options dropped."""
     profile = load_profile(PROFILE_PATH)
     table = load_table(TABLE_PATH)
 
-    options = find_compatible(table, ProcessType.BOIL_WATER, profile.tools_owned)
-    names = {opt.tool.name for opt in options}
+    all_owned = (
+        profile.cooks
+        + profile.burners
+        + profile.workstations
+        + profile.containers
+        + profile.appliances
+        + profile.utensils
+    )
+    options = find_compatible(table, ProcessType.BOIL_WATER, all_owned)
+    labels = {opt.label for opt in options}
 
-    # User has no やかん nor 電気ケトル → must be filtered out
-    assert "やかん" not in names
-    assert "電気ケトル" not in names
-    # User has 片手鍋, 両手鍋, 電子レンジ → must remain
-    assert "片手鍋" in names
-    assert "両手鍋" in names
-    assert "電子レンジ" in names
+    assert "やかん+コンロ" not in labels  # no やかん
+    assert "電気ケトル" not in labels  # no 電気ケトル
+    assert "片手鍋+コンロ" in labels
+    assert "両手鍋+コンロ" in labels
+    assert "電子レンジ" in labels
 
 
-def test_find_compatible_chop_uses_composite_match():
+def test_find_compatible_bake_returns_empty_for_user_without_oven():
     profile = load_profile(PROFILE_PATH)
     table = load_table(TABLE_PATH)
-
-    options = find_compatible(table, ProcessType.CHOP, profile.tools_owned)
-    names = {opt.tool.name for opt in options}
-
-    # 包丁 and まな板 are both owned
-    assert "包丁+まな板" in names
-    # User does not own these
-    assert "フードプロセッサ" not in names
-    assert "キッチンばさみ" not in names
-
-
-def test_find_compatible_bake_yields_none_for_user_without_oven():
-    """User profile intentionally lacks oven, toaster, and grill —
-    find_compatible should return [] for ProcessType.BAKE."""
-    profile = load_profile(PROFILE_PATH)
-    table = load_table(TABLE_PATH)
-    options = find_compatible(table, ProcessType.BAKE, profile.tools_owned)
-    assert options == []
-
-
-def test_find_compatible_sorts_by_quality_desc():
-    profile = load_profile(PROFILE_PATH)
-    table = load_table(TABLE_PATH)
-    options = find_compatible(table, ProcessType.SAUTE, profile.tools_owned)
-
-    qualities = [opt.quality_factor for opt in options]
-    assert qualities == sorted(qualities, reverse=True)
+    all_owned = (
+        profile.cooks + profile.burners + profile.workstations
+        + profile.containers + profile.appliances + profile.utensils
+    )
+    assert find_compatible(table, ProcessType.BAKE, all_owned) == []
 
 
 # ---------------------------------------------------------------------------
@@ -183,29 +174,39 @@ def test_find_compatible_sorts_by_quality_desc():
 
 def test_add_entry_appends_new():
     table = ToolUseTable(entries={})
-    new_opt = ToolOption(
-        tool=Tool(name="ホットプレート", kind=ToolKind.APPLIANCE),
+    opt = ToolOption(
+        label="ホットプレート",
+        resources=[
+            ResourceSpec(kind=ResourceKind.COOK),
+            ResourceSpec(kind=ResourceKind.APPLIANCE, name_hint="ホットプレート"),
+        ],
         time_factor=1.1,
         source="llm",
     )
-    appended = add_entry(table, ProcessType.SAUTE, new_opt)
+    appended = add_entry(table, ProcessType.SAUTE, opt)
     assert appended is True
     assert len(table.entries["saute"]) == 1
-    assert table.entries["saute"][0].tool.name == "ホットプレート"
     assert table.entries["saute"][0].source == "llm"
 
 
-def test_add_entry_skips_duplicate_by_name():
+def test_add_entry_skips_duplicate_label():
     table = ToolUseTable(
         entries={
             "saute": [
-                ToolOption(tool=Tool(name="フライパン", kind=ToolKind.CONTAINER))
+                ToolOption(
+                    label="フライパン+コンロ",
+                    resources=[
+                        ResourceSpec(kind=ResourceKind.COOK),
+                        ResourceSpec(kind=ResourceKind.BURNER),
+                    ],
+                )
             ]
         }
     )
     dup = ToolOption(
-        tool=Tool(name="フライパン", kind=ToolKind.CONTAINER),
-        time_factor=2.0,  # different params, same name
+        label="フライパン+コンロ",
+        resources=[ResourceSpec(kind=ResourceKind.COOK)],
+        time_factor=2.0,
     )
     appended = add_entry(table, ProcessType.SAUTE, dup)
     assert appended is False
@@ -217,12 +218,14 @@ def test_update_time_factor():
         entries={
             "boil": [
                 ToolOption(
-                    tool=Tool(name="片手鍋", kind=ToolKind.CONTAINER), time_factor=1.0
+                    label="片手鍋+コンロ",
+                    resources=[ResourceSpec(kind=ResourceKind.COOK)],
+                    time_factor=1.0,
                 )
             ]
         }
     )
-    assert update_time_factor(table, ProcessType.BOIL, "片手鍋", 1.3) is True
+    assert update_time_factor(table, ProcessType.BOIL, "片手鍋+コンロ", 1.3) is True
     assert table.entries["boil"][0].time_factor == 1.3
     assert update_time_factor(table, ProcessType.BOIL, "missing", 0.5) is False
 
@@ -237,7 +240,11 @@ def test_save_and_load_table_round_trip(tmp_path):
         entries={
             "boil": [
                 ToolOption(
-                    tool=Tool(name="鍋", kind=ToolKind.CONTAINER),
+                    label="鍋",
+                    resources=[
+                        ResourceSpec(kind=ResourceKind.COOK, relative_duration=0.3),
+                        ResourceSpec(kind=ResourceKind.CONTAINER, name_hint="鍋"),
+                    ],
                     time_factor=1.5,
                     quality_factor=0.9,
                     source="seed",
@@ -248,6 +255,6 @@ def test_save_and_load_table_round_trip(tmp_path):
     out = tmp_path / "table.json"
     save_table(table, out)
     loaded = load_table(out)
-    assert loaded.entries["boil"][0].tool.name == "鍋"
+    assert loaded.entries["boil"][0].label == "鍋"
     assert loaded.entries["boil"][0].time_factor == 1.5
-    assert loaded.entries["boil"][0].quality_factor == 0.9
+    assert loaded.entries["boil"][0].resources[0].relative_duration == 0.3

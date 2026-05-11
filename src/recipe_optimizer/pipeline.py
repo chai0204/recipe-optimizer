@@ -36,6 +36,7 @@ from .schemas import (
     RawRecipe,
     RecipeDAG,
     RenderedRecipe,
+    Schedule,
     SubstitutionCandidate,
     ToolUseTable,
     UserProfile,
@@ -108,8 +109,13 @@ def optimize_from_dag(
     if remaining and raise_on_unresolvable:
         raise UnresolvableRecipeError(remaining)
 
-    # 4. Schedule
-    sched = schedule(dag, constraints)
+    # 4. Schedule. If unresolvable but caller is tolerating it, skip the
+    #    scheduler (which would raise on missing resources) and return an
+    #    empty schedule as the partial result.
+    if remaining:
+        sched = Schedule(steps=[], total_duration_min=0.0, critical_path_edge_ids=[])
+    else:
+        sched = schedule(dag, constraints)
 
     # 5. Output formatters
     numbered = to_numbered_steps(dag, sched)

@@ -1,8 +1,5 @@
 {
   "user_id": "demo_user_01",
-  "burners_count": 2,
-  "num_cooks": 1,
-  "workstation_count": 1,
   "skill_level": "intermediate",
   "skill_factors": {
     "chop": 1.2,
@@ -14,87 +11,35 @@
     "beat": 1.0,
     "mix": 1.0
   },
-  "tools_owned": [
-    {
-      "name": "コンロ口1",
-      "kind": "heat_source",
-      "attributes": {"type": "gas", "max_power": "high"}
-    },
-    {
-      "name": "コンロ口2",
-      "kind": "heat_source",
-      "attributes": {"type": "gas", "max_power": "high"}
-    },
-    {
-      "name": "電子レンジ",
-      "kind": "appliance",
-      "attributes": {"max_power_w": 600, "has_turntable": true}
-    },
-    {
-      "name": "炊飯器",
-      "kind": "appliance",
-      "attributes": {"capacity_go": 5}
-    },
-    {
-      "name": "片手鍋",
-      "kind": "container",
-      "attributes": {"capacity_ml": 1500, "has_lid": true, "diameter_cm": 18}
-    },
-    {
-      "name": "両手鍋",
-      "kind": "container",
-      "attributes": {"capacity_ml": 3000, "has_lid": true, "diameter_cm": 24}
-    },
-    {
-      "name": "フライパン",
-      "kind": "container",
-      "attributes": {"capacity_ml": 2000, "has_lid": false, "diameter_cm": 26, "non_stick": true}
-    },
-    {
-      "name": "ボウル大",
-      "kind": "container",
-      "attributes": {"capacity_ml": 2000}
-    },
-    {
-      "name": "ボウル小",
-      "kind": "container",
-      "attributes": {"capacity_ml": 500}
-    },
-    {
-      "name": "ザル",
-      "kind": "container",
-      "attributes": {"diameter_cm": 22}
-    },
-    {
-      "name": "包丁",
-      "kind": "utensil",
-      "attributes": {"type": "santoku"}
-    },
-    {
-      "name": "まな板",
-      "kind": "utensil",
-      "attributes": {}
-    },
-    {
-      "name": "菜箸",
-      "kind": "utensil",
-      "attributes": {}
-    },
-    {
-      "name": "おたま",
-      "kind": "utensil",
-      "attributes": {}
-    },
-    {
-      "name": "計量カップ",
-      "kind": "utensil",
-      "attributes": {"max_ml": 500}
-    },
-    {
-      "name": "計量スプーン",
-      "kind": "utensil",
-      "attributes": {}
-    }
+  "cooks": [
+    { "id": "cook_self", "kind": "cook", "name": "自分" }
+  ],
+  "burners": [
+    { "id": "burner_1", "kind": "burner", "name": "コンロ口1", "attributes": { "type": "gas" } },
+    { "id": "burner_2", "kind": "burner", "name": "コンロ口2", "attributes": { "type": "gas" } }
+  ],
+  "workstations": [
+    { "id": "ws_1", "kind": "workstation", "name": "調理台" }
+  ],
+  "containers": [
+    { "id": "c_pot_small", "kind": "container", "name": "片手鍋", "attributes": { "capacity_ml": 1500, "has_lid": true, "diameter_cm": 18 } },
+    { "id": "c_pot_large", "kind": "container", "name": "両手鍋", "attributes": { "capacity_ml": 3000, "has_lid": true, "diameter_cm": 24 } },
+    { "id": "c_fry_pan", "kind": "container", "name": "フライパン", "attributes": { "capacity_ml": 2000, "diameter_cm": 26, "non_stick": true } },
+    { "id": "c_bowl_large", "kind": "container", "name": "ボウル大", "attributes": { "capacity_ml": 2000 } },
+    { "id": "c_bowl_small", "kind": "container", "name": "ボウル小", "attributes": { "capacity_ml": 500 } },
+    { "id": "c_zaru", "kind": "container", "name": "ザル", "attributes": { "diameter_cm": 22 } }
+  ],
+  "appliances": [
+    { "id": "a_microwave", "kind": "appliance", "name": "電子レンジ", "attributes": { "max_power_w": 600 } },
+    { "id": "a_ricecooker", "kind": "appliance", "name": "炊飯器", "attributes": { "capacity_go": 5 } }
+  ],
+  "utensils": [
+    { "id": "u_knife", "kind": "utensil", "name": "包丁", "attributes": { "type": "santoku" } },
+    { "id": "u_board", "kind": "utensil", "name": "まな板" },
+    { "id": "u_chopsticks", "kind": "utensil", "name": "菜箸" },
+    { "id": "u_ladle", "kind": "utensil", "name": "おたま" },
+    { "id": "u_meas_cup", "kind": "utensil", "name": "計量カップ" },
+    { "id": "u_meas_spoon", "kind": "utensil", "name": "計量スプーン" }
   ],
   "preferences": {
     "avoid_deep_fry": true,
@@ -102,7 +47,7 @@
     "max_cooking_time_min": 30
   },
   "_notes_for_poc": [
-    "意図的に「やかん」「オーブン」「ホットプレート」「圧力鍋」「ミキサー」を所有していない設定。",
-    "麦茶レシピが入力されればやかん→鍋への代替が、肉じゃがが入力されれば普通に作れる、という対比でテスト可能。"
+    "意図的に やかん / オーブン / 圧力鍋 / ミキサー を持たない設定。",
+    "麦茶レシピがあれば やかん→片手鍋 への代替テストが走る。"
   ]
 }

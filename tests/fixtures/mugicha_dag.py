@@ -1,11 +1,8 @@
-"""Hand-crafted RecipeDAG for the 麦茶 (barley tea) example.
+"""Hand-crafted RecipeDAG for 麦茶 under the explicit resource model.
 
-This is the canonical case discussed in the design conversation:
-boiling water "with やかん" — when the user lacks やかん, the
-substitution layer must replace this with 鍋 (or 電子レンジ).
-
-Used by checker tests to verify violation detection, and by later
-proposer/rewriter tests as the input that triggers substitution.
+The canonical "やかんがない人向け" substitution case: the boil edge
+demands ``container/やかん`` which the demo profile lacks, forcing the
+proposer to swap in 片手鍋 / 両手鍋 / 電子レンジ from the table.
 """
 
 from __future__ import annotations
@@ -15,15 +12,23 @@ from recipe_optimizer.schemas import (
     ProcessEdge,
     ProcessType,
     RecipeDAG,
-    Tool,
-    ToolKind,
+    ResourceKind,
+    ResourceRequirement,
 )
 
 
-def make_mugicha_dag() -> RecipeDAG:
-    yakan = Tool(name="やかん", kind=ToolKind.CONTAINER)
-    burner = Tool(name="コンロ口", kind=ToolKind.HEAT_SOURCE)
+def _req(
+    kind: ResourceKind,
+    hold: float,
+    *,
+    name_hint: str | None = None,
+) -> ResourceRequirement:
+    return ResourceRequirement(
+        kind=kind, name_hint=name_hint, hold_duration_min=hold
+    )
 
+
+def make_mugicha_dag() -> RecipeDAG:
     nodes = [
         GoalNode(id="n_water", description="水 1L"),
         GoalNode(id="n_barley_pack", description="麦茶パック 1個"),
@@ -38,9 +43,12 @@ def make_mugicha_dag() -> RecipeDAG:
             to_node="n_boiling_water",
             action=ProcessType.BOIL_WATER,
             description="やかんで湯を沸かす",
-            tools_required=[yakan, burner],
             duration_min=5.0,
-            attentive_min=1.0,
+            resource_uses=[
+                _req(ResourceKind.COOK, 1.0),  # 火加減確認だけ最初の1分
+                _req(ResourceKind.BURNER, 5.0),
+                _req(ResourceKind.CONTAINER, 5.0, name_hint="やかん"),
+            ],
             parameters={"volume_ml": 1000},
         ),
         ProcessEdge(
@@ -49,9 +57,11 @@ def make_mugicha_dag() -> RecipeDAG:
             to_node="n_brewed",
             action=ProcessType.MIX,
             description="やかんに麦茶パックを入れ抽出する",
-            tools_required=[yakan],
             duration_min=10.0,
-            attentive_min=0.5,
+            resource_uses=[
+                _req(ResourceKind.COOK, 0.5),  # 入れて蓋する程度
+                _req(ResourceKind.CONTAINER, 10.0, name_hint="やかん"),
+            ],
         ),
     ]
 

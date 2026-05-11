@@ -2,16 +2,16 @@
 
 - ``numbered_list``: chronological numbered steps (plain text)
 - ``dag_viz``: structured DAG visualization (Mermaid syntax)
-- ``shopping_list``: consolidated ingredients + tools list
+- ``shopping_list``: consolidated ingredients + resources list
 """
 
 from .dag_viz import to_mermaid
 from .numbered_list import to_numbered_steps
-from .shopping_list import aggregate_tools, build_shopping_list
+from .shopping_list import aggregate_resources, build_shopping_list
 
 __all__ = [
     "to_numbered_steps",
     "to_mermaid",
-    "aggregate_tools",
+    "aggregate_resources",
     "build_shopping_list",
 ]

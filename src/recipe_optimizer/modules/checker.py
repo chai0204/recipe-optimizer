@@ -1,60 +1,64 @@
-"""Constraint checker: identify edges that cannot be executed as-is.
+"""Constraint checker: identify resource requirements the profile cannot satisfy.
 
-Pure-algorithmic module (no LLM). Given a RecipeDAG and the user's
-constraints (profile + session state), returns a list of
-ConstraintViolation objects, one per edge whose required tools are not
-all satisfied by the user's owned tools.
+Pure-algorithmic. For every ``ResourceRequirement`` on every edge,
+look for a matching resource in the user's pool (kind + name_hint).
+Any unmet requirement becomes a ``ConstraintViolation``.
 
-Scope decisions for this PoC:
-
-- **Tool checking**: every tool listed in ``edge.tools_required`` must
-  be satisfied by ``profile.tools_owned`` via
-  :func:`recipe_optimizer.data_io.tool_use_table.is_tool_owned`
-  (exact match, composite ``"a+b"`` decomposition, or one-way substring
-  containment).
-- **Ingredient checking**: currently a no-op. Static profiles do not
-  enumerate the user's pantry, and dynamic constraint updates are
-  deferred to a later iteration.
-- **Burner / heat-source contention**: a *temporal* concern handled by
-  the scheduler. The checker only reports static infeasibility, never
-  resource conflicts that depend on parallel execution.
+The scheduler enforces temporal contention separately — the checker
+only sees *static* infeasibility (no compatible resource exists at all).
 """
 
 from __future__ import annotations
 
-from ..data_io.tool_use_table import is_tool_owned
-from ..schemas import ConstraintViolation, Constraints, RecipeDAG
+from ..data_io.tool_use_table import can_satisfy_spec
+from ..schemas import (
+    ConstraintViolation,
+    Constraints,
+    RecipeDAG,
+    ResourceSpec,
+)
 
 
-REASON_MISSING_TOOL = "missing_tool"
+REASON_MISSING_RESOURCE = "missing_resource"
 
 
 def find_violations(
     dag: RecipeDAG, constraints: Constraints
 ) -> list[ConstraintViolation]:
-    """Identify edges in ``dag`` whose required tools are not all owned.
+    """One violation per unsatisfiable ``ResourceRequirement``.
 
-    Returns the violations in the same order as ``dag.edges`` so callers
-    can iterate deterministically. Edges with empty ``tools_required``
-    (e.g., a ``serve`` action) never produce a violation.
+    Order follows ``dag.edges`` then the order of ``resource_uses``
+    inside each edge for determinism.
     """
-    owned = constraints.profile.tools_owned
+    profile = constraints.profile
+    owned = (
+        profile.cooks
+        + profile.burners
+        + profile.workstations
+        + profile.containers
+        + profile.appliances
+        + profile.utensils
+    )
+
     violations: list[ConstraintViolation] = []
-
     for edge in dag.edges:
-        missing = [tool.name for tool in edge.tools_required if not is_tool_owned(tool, owned)]
-        if missing:
-            violations.append(
-                ConstraintViolation(
-                    edge_id=edge.id,
-                    reason=REASON_MISSING_TOOL,
-                    missing=missing,
-                )
+        for use in edge.resource_uses:
+            spec = ResourceSpec(
+                kind=use.kind,
+                name_hint=use.name_hint,
+                relative_duration=1.0,
             )
-
+            if not can_satisfy_spec(spec, owned):
+                violations.append(
+                    ConstraintViolation(
+                        edge_id=edge.id,
+                        reason=REASON_MISSING_RESOURCE,
+                        missing_kind=use.kind,
+                        missing_name_hint=use.name_hint,
+                    )
+                )
     return violations
 
 
 def is_satisfiable(dag: RecipeDAG, constraints: Constraints) -> bool:
-    """True iff ``find_violations`` returns no violations."""
     return not find_violations(dag, constraints)

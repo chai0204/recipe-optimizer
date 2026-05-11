@@ -18,12 +18,11 @@ from recipe_optimizer.modules.selector import (
     select_best,
 )
 from recipe_optimizer.schemas import (
-    Constraints,
     ProcessEdge,
     ProcessType,
+    ResourceKind,
+    ResourceRequirement,
     SubstitutionCandidate,
-    Tool,
-    ToolKind,
 )
 
 from .fixtures.mugicha_dag import make_mugicha_dag
@@ -47,7 +46,14 @@ def _candidate(
         to_node="b",
         action=ProcessType.MIX,
         description="r",
-        tools_required=[Tool(name=tool_name, kind=ToolKind.CONTAINER)],
+        duration_min=1.0,
+        resource_uses=[
+            ResourceRequirement(
+                kind=ResourceKind.CONTAINER,
+                name_hint=tool_name,
+                hold_duration_min=1.0,
+            )
+        ],
     )
     return SubstitutionCandidate(
         original_edge_id=edge_id,
@@ -114,7 +120,7 @@ def test_rank_orders_best_first():
     # → 0.05 - (-0.5)*0.05 = +0.075
 
     ranked = rank_candidates([fast_low_quality, same_quality_slow, high_quality_fast])
-    names = [c.replacement_edge.tools_required[0].name for c in ranked]
+    names = [c.replacement_edge.resource_uses[0].name_hint for c in ranked]
     assert names == ["best", "fast", "slow"]
     # Verify scores monotonically non-increasing
     assert ranked[0].score >= ranked[1].score >= ranked[2].score
@@ -132,7 +138,7 @@ def test_rank_is_stable_on_ties():
     b = _candidate(tool_name="B", quality_delta=0.0, time_delta_min=1.0)
     c = _candidate(tool_name="C", quality_delta=0.0, time_delta_min=1.0)
     ranked = rank_candidates([a, b, c])
-    assert [r.replacement_edge.tools_required[0].name for r in ranked] == ["A", "B", "C"]
+    assert [r.replacement_edge.resource_uses[0].name_hint for r in ranked] == ["A", "B", "C"]
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +155,7 @@ def test_select_best_picks_max_score():
     good = _candidate(tool_name="good", quality_delta=+0.05, time_delta_min=+0.5)
     chosen = select_best([poor, good])
     assert chosen is not None
-    assert chosen.replacement_edge.tools_required[0].name == "good"
+    assert chosen.replacement_edge.resource_uses[0].name_hint == "good"
     assert chosen.score == pytest.approx(0.05 - 0.5 * DEFAULT_WEIGHTS["time_min"])
 
 
@@ -159,7 +165,7 @@ def test_select_best_quality_outweighs_small_time_penalty():
     slow_better = _candidate(tool_name="slow", quality_delta=+0.05, time_delta_min=+0.5)
     chosen = select_best([fast_worse, slow_better])
     assert chosen is not None
-    assert chosen.replacement_edge.tools_required[0].name == "slow"
+    assert chosen.replacement_edge.resource_uses[0].name_hint == "slow"
 
 
 def test_select_best_picks_fastest_when_quality_neutral():
@@ -168,7 +174,7 @@ def test_select_best_picks_fastest_when_quality_neutral():
     c = _candidate(tool_name="c", quality_delta=0.0, time_delta_min=+0.5)
     chosen = select_best([a, b, c])
     assert chosen is not None
-    assert chosen.replacement_edge.tools_required[0].name == "c"
+    assert chosen.replacement_edge.resource_uses[0].name_hint == "c"
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +183,9 @@ def test_select_best_picks_fastest_when_quality_neutral():
 
 
 def test_select_picks_pot_for_mugicha_boil_water():
-    """Integration: proposer → selector for the canonical 麦茶 case.
+    """Integration: proposer → selector for the canonical 麦茶 case."""
+    from recipe_optimizer.schemas import Constraints
 
-    With default weights, 片手鍋 (q=0, t=+0.8) should beat 両手鍋
-    (q=0, t=+1.2) and 電子レンジ (q=-0.1, t=+0.5).
-    """
     profile = load_profile(PROFILE_PATH)
     table = load_table(TABLE_PATH)
     proposer = RecipeProposer(client=MockLLMClient(), table=table)
@@ -195,18 +199,15 @@ def test_select_picks_pot_for_mugicha_boil_water():
     chosen = select_best(candidates)
 
     assert chosen is not None
-    container_names = {
-        t.name
-        for t in chosen.replacement_edge.tools_required
-        if t.kind in {ToolKind.CONTAINER, ToolKind.APPLIANCE}
-    }
-    assert "片手鍋" in container_names
+    hints = {u.name_hint for u in chosen.replacement_edge.resource_uses}
+    assert "片手鍋" in hints
     assert chosen.score is not None
 
 
 def test_select_with_speed_priority_picks_microwave():
-    """If we override weights to value time over quality, 電子レンジ wins
-    on this small quality cost (q=-0.1) because it's the fastest."""
+    """Speed-priority weights favor 電子レンジ (smallest time delta)."""
+    from recipe_optimizer.schemas import Constraints
+
     profile = load_profile(PROFILE_PATH)
     table = load_table(TABLE_PATH)
     proposer = RecipeProposer(client=MockLLMClient(), table=table)
@@ -220,14 +221,9 @@ def test_select_with_speed_priority_picks_microwave():
     )
     candidates = proposer.propose(boil_v, edges_by_id["e_boil"], profile)
 
-    # Speed-first: time penalty dominates, quality almost ignored
     speed_weights: Weights = {"quality": 0.05, "time_min": 1.0}
     chosen = select_best(candidates, weights=speed_weights)
 
     assert chosen is not None
-    container_names = {
-        t.name
-        for t in chosen.replacement_edge.tools_required
-        if t.kind in {ToolKind.CONTAINER, ToolKind.APPLIANCE}
-    }
-    assert "電子レンジ" in container_names
+    hints = {u.name_hint for u in chosen.replacement_edge.resource_uses}
+    assert "電子レンジ" in hints

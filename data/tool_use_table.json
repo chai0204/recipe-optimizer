@@ -1,336 +1,415 @@
 {
-  "_schema_note": "key = ProcessType, value = list of ToolOption sorted by quality_factor desc. time_factor は基準ツールに対する所要時間比（>1 で遅い）。constraints は適用条件で、満たさない場合この選択肢は除外される。",
-  "_canonical_baseline": "各ProcessTypeの最初のエントリが基準（time_factor=1.0, quality_factor=1.0）。",
+  "_schema_note": "key = ProcessType, value = list of ToolOption. Each option carries a resource_pattern (kinds + name_hints + relative_durations) plus time_factor / quality_factor relative to the action's baseline. relative_duration=1.0 means held for the whole edge; values <1 mean the resource is freed early (e.g., cook only needed at the start of a simmer).",
+  "_canonical_baseline": "First entry of each action is the canonical (time_factor=1.0, quality_factor=1.0).",
   "entries": {
     "boil_water": [
       {
-        "tool": {"name": "やかん", "kind": "container", "attributes": {"capacity_ml": 2000}},
+        "label": "やかん+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.2 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "やかん", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "片手鍋", "kind": "container", "attributes": {"has_lid": true}},
+        "label": "片手鍋+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.2 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "片手鍋", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.15,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true, "max_volume_ml": 1500},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "両手鍋", "kind": "container", "attributes": {"has_lid": true}},
+        "label": "両手鍋+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.2 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "両手鍋", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.25,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true, "max_volume_ml": 3000},
-        "confidence": 1.0,
+        "constraints": { "max_volume_ml": 3000 },
         "source": "seed"
       },
       {
-        "tool": {"name": "電気ケトル", "kind": "appliance", "attributes": {}},
+        "label": "電気ケトル",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.1 },
+          { "kind": "appliance", "name_hint": "電気ケトル", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.6,
         "quality_factor": 1.0,
-        "constraints": {"max_volume_ml": 1200},
-        "confidence": 1.0,
+        "constraints": { "max_volume_ml": 1200 },
         "source": "seed"
       },
       {
-        "tool": {"name": "電子レンジ", "kind": "appliance", "attributes": {}},
+        "label": "電子レンジ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.2 },
+          { "kind": "appliance", "name_hint": "電子レンジ", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.1,
         "quality_factor": 0.9,
-        "constraints": {"max_volume_ml": 500, "requires_microwave_safe_container": true},
-        "confidence": 0.9,
+        "constraints": { "max_volume_ml": 500 },
         "source": "seed"
       }
     ],
     "boil": [
       {
-        "tool": {"name": "片手鍋", "kind": "container", "attributes": {}},
+        "label": "片手鍋+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.3 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "片手鍋", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true, "max_volume_ml": 1500},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "両手鍋", "kind": "container", "attributes": {}},
+        "label": "両手鍋+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.3 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "両手鍋", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.1,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true},
-        "confidence": 1.0,
-        "source": "seed"
-      },
-      {
-        "tool": {"name": "深めのフライパン", "kind": "container", "attributes": {"has_lid": true}},
-        "time_factor": 1.0,
-        "quality_factor": 0.95,
-        "constraints": {"requires_heat_source": true, "requires_lid": true},
-        "confidence": 0.9,
         "source": "seed"
       }
     ],
     "simmer": [
       {
-        "tool": {"name": "片手鍋", "kind": "container", "attributes": {}},
+        "label": "片手鍋+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.25 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "片手鍋", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "両手鍋", "kind": "container", "attributes": {}},
+        "label": "両手鍋+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.25 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "両手鍋", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "フライパン", "kind": "container", "attributes": {"has_lid": true}},
+        "label": "フライパン+コンロ（蓋必要）",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.3 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "フライパン", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.95,
         "quality_factor": 0.95,
-        "constraints": {"requires_heat_source": true, "requires_lid": true},
-        "confidence": 0.85,
+        "constraints": { "requires_lid": true },
         "source": "seed"
       },
       {
-        "tool": {"name": "圧力鍋", "kind": "container", "attributes": {}},
+        "label": "圧力鍋+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.3 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "圧力鍋", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.4,
         "quality_factor": 0.95,
-        "constraints": {"requires_heat_source": true},
-        "confidence": 0.9,
         "source": "seed"
       }
     ],
     "saute": [
       {
-        "tool": {"name": "フライパン", "kind": "container", "attributes": {}},
+        "label": "フライパン+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "フライパン", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "中華鍋", "kind": "container", "attributes": {}},
+        "label": "中華鍋+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "中華鍋", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.9,
         "quality_factor": 1.05,
-        "constraints": {"requires_heat_source": true},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "片手鍋", "kind": "container", "attributes": {}},
+        "label": "片手鍋+コンロ（代替）",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "片手鍋", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.2,
         "quality_factor": 0.85,
-        "constraints": {"requires_heat_source": true},
-        "confidence": 0.7,
         "source": "seed"
       }
     ],
     "fry": [
       {
-        "tool": {"name": "深型フライパン", "kind": "container", "attributes": {}},
+        "label": "深型フライパン+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "深型フライパン", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true, "requires_oil_ml": 500},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "両手鍋", "kind": "container", "attributes": {}},
+        "label": "両手鍋+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "両手鍋", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true, "requires_oil_ml": 800},
-        "confidence": 1.0,
         "source": "seed"
       }
     ],
     "bake": [
       {
-        "tool": {"name": "オーブン", "kind": "appliance", "attributes": {}},
+        "label": "オーブン",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.1 },
+          { "kind": "appliance", "name_hint": "オーブン", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "オーブントースター", "kind": "appliance", "attributes": {}},
+        "label": "オーブントースター",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.1 },
+          { "kind": "appliance", "name_hint": "オーブントースター", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.9,
         "quality_factor": 0.85,
-        "constraints": {"max_food_thickness_cm": 3},
-        "confidence": 0.8,
+        "constraints": { "max_food_thickness_cm": 3 },
         "source": "seed"
       },
       {
-        "tool": {"name": "魚焼きグリル", "kind": "appliance", "attributes": {}},
+        "label": "魚焼きグリル",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.2 },
+          { "kind": "appliance", "name_hint": "魚焼きグリル", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.85,
         "quality_factor": 0.8,
-        "constraints": {"max_food_thickness_cm": 4},
-        "confidence": 0.7,
         "source": "seed"
       }
     ],
     "steam": [
       {
-        "tool": {"name": "蒸し器", "kind": "container", "attributes": {}},
+        "label": "蒸し器+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.15 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "蒸し器", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {"requires_heat_source": true},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "鍋+ザル", "kind": "container", "attributes": {}},
+        "label": "鍋+ザル+コンロ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.2 },
+          { "kind": "burner", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "片手鍋", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "ザル", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.05,
         "quality_factor": 0.95,
-        "constraints": {"requires_heat_source": true, "requires_lid": true},
-        "confidence": 0.9,
         "source": "seed"
       },
       {
-        "tool": {"name": "電子レンジ", "kind": "appliance", "attributes": {}},
+        "label": "電子レンジ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.2 },
+          { "kind": "appliance", "name_hint": "電子レンジ", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.5,
         "quality_factor": 0.85,
-        "constraints": {"max_volume_ml": 800},
-        "confidence": 0.8,
         "source": "seed"
       }
     ],
     "microwave": [
       {
-        "tool": {"name": "電子レンジ", "kind": "appliance", "attributes": {}},
+        "label": "電子レンジ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.1 },
+          { "kind": "appliance", "name_hint": "電子レンジ", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {"requires_microwave_safe_container": true},
-        "confidence": 1.0,
         "source": "seed"
       }
     ],
     "chop": [
       {
-        "tool": {"name": "包丁+まな板", "kind": "utensil", "attributes": {}},
+        "label": "包丁+まな板",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "workstation", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "フードプロセッサ", "kind": "appliance", "attributes": {}},
+        "label": "フードプロセッサ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.3 },
+          { "kind": "appliance", "name_hint": "フードプロセッサ", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.3,
         "quality_factor": 0.9,
-        "constraints": {"min_amount_g": 50},
-        "confidence": 0.9,
-        "source": "seed"
-      },
-      {
-        "tool": {"name": "キッチンばさみ", "kind": "utensil", "attributes": {}},
-        "time_factor": 1.3,
-        "quality_factor": 0.85,
-        "constraints": {"only_soft_food": true},
-        "confidence": 0.8,
         "source": "seed"
       }
     ],
     "slice": [
       {
-        "tool": {"name": "包丁+まな板", "kind": "utensil", "attributes": {}},
+        "label": "包丁+まな板",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "workstation", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "スライサー", "kind": "utensil", "attributes": {}},
+        "label": "スライサー",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "workstation", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.5,
         "quality_factor": 1.0,
-        "constraints": {"only_uniform_slicing": true},
-        "confidence": 0.95,
         "source": "seed"
       }
     ],
     "mince": [
       {
-        "tool": {"name": "包丁+まな板", "kind": "utensil", "attributes": {}},
+        "label": "包丁+まな板",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "workstation", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "フードプロセッサ", "kind": "appliance", "attributes": {}},
+        "label": "フードプロセッサ",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.2 },
+          { "kind": "appliance", "name_hint": "フードプロセッサ", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.2,
         "quality_factor": 0.9,
-        "constraints": {"min_amount_g": 50},
-        "confidence": 0.95,
         "source": "seed"
       }
     ],
     "peel": [
       {
-        "tool": {"name": "ピーラー", "kind": "utensil", "attributes": {}},
+        "label": "ピーラー",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "workstation", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "包丁+まな板", "kind": "utensil", "attributes": {}},
+        "label": "包丁+まな板",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "workstation", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.5,
         "quality_factor": 0.95,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       }
     ],
     "mix": [
       {
-        "tool": {"name": "ボウル+菜箸", "kind": "container", "attributes": {}},
+        "label": "ボウル+菜箸",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "ボウル", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "ボウル+泡立て器", "kind": "container", "attributes": {}},
+        "label": "ボウル+泡立て器",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "ボウル", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.8,
         "quality_factor": 1.05,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "ボウル+ハンドミキサー", "kind": "appliance", "attributes": {}},
+        "label": "ボウル+ハンドミキサー",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "ボウル", "relative_duration": 1.0 },
+          { "kind": "appliance", "name_hint": "ハンドミキサー", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.3,
         "quality_factor": 1.1,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       }
     ],
     "beat": [
       {
-        "tool": {"name": "ボウル+菜箸", "kind": "container", "attributes": {}},
+        "label": "ボウル+菜箸",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "ボウル", "relative_duration": 1.0 }
+        ],
         "time_factor": 1.0,
         "quality_factor": 1.0,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       },
       {
-        "tool": {"name": "ボウル+泡立て器", "kind": "container", "attributes": {}},
+        "label": "ボウル+泡立て器",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "ボウル", "relative_duration": 1.0 }
+        ],
         "time_factor": 0.7,
         "quality_factor": 1.05,
-        "constraints": {},
-        "confidence": 1.0,
         "source": "seed"
       }
     ]
