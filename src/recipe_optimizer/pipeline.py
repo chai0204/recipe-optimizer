@@ -24,25 +24,70 @@ from __future__ import annotations
 
 from .llm import LLMClient
 from .llm import LLMOutputError
+import networkx as nx
+
 from .modules.checker import find_violations
 from .modules.parser import RecipeParser
 from .modules.proposer import RecipeProposer
 from .modules.renderer import RecipeRenderer
-from .modules.rewriter import apply_substitutions
+from .modules.rewriter import apply_substitution
 from .modules.scheduler import schedule
 from .modules.selector import Weights, select_best
 from .output import build_shopping_list, to_mermaid, to_numbered_steps
 from .schemas import (
     ConstraintViolation,
     Constraints,
+    ProcessEdge,
     RawRecipe,
     RecipeDAG,
     RenderedRecipe,
+    ResourceKind,
     Schedule,
     SubstitutionCandidate,
     ToolUseTable,
     UserProfile,
 )
+
+
+def _build_edge_dag(dag: RecipeDAG) -> nx.DiGraph:
+    """Edge dependency graph: A → B iff A.to_node ∈ B.from_nodes."""
+    edges_producing: dict[str, str] = {e.to_node: e.id for e in dag.edges}
+    g: nx.DiGraph = nx.DiGraph()
+    for e in dag.edges:
+        g.add_node(e.id)
+    for e in dag.edges:
+        for from_node in e.from_nodes:
+            pred = edges_producing.get(from_node)
+            if pred is not None:
+                g.add_edge(pred, e.id)
+    return g
+
+
+def _upstream_container_names(
+    dag: RecipeDAG, edge_id: str, edge_g: nx.DiGraph
+) -> set[str]:
+    """Collect container / appliance ``name_hint``s used by every edge
+    that transitively produces input to ``edge_id``. Carries forward
+    the cook's pot/bowl choice into downstream steps so the substitution
+    layer can prefer continuity."""
+    by_id = {e.id: e for e in dag.edges}
+    visited: set[str] = set()
+    out: set[str] = set()
+    container_kinds = {ResourceKind.CONTAINER, ResourceKind.APPLIANCE}
+
+    def walk(eid: str) -> None:
+        for pred in edge_g.predecessors(eid):
+            if pred in visited:
+                continue
+            visited.add(pred)
+            edge = by_id[pred]
+            for use in edge.resource_uses:
+                if use.kind in container_kinds and use.name_hint:
+                    out.add(use.name_hint)
+            walk(pred)
+
+    walk(edge_id)
+    return out
 
 
 class UnresolvableRecipeError(RuntimeError):
@@ -93,19 +138,48 @@ def optimize_from_dag(
     # 1. Detect static violations
     violations = find_violations(dag, constraints)
 
-    # 2. For each violation, propose + select + collect
+    # 2. Substitute in topological order so downstream edges see the
+    #    containers their predecessors committed to. Each violation is
+    #    resolved on the up-to-date DAG and the substitution is applied
+    #    immediately, so later proposer calls receive a coherent
+    #    ``preferred_resource_names`` hint.
     substitutions: list[SubstitutionCandidate] = []
     if violations:
         proposer = RecipeProposer(client=client, table=table)
-        edges_by_id = {e.id: e for e in dag.edges}
-        for violation in violations:
-            edge = edges_by_id[violation.edge_id]
-            candidates = proposer.propose(violation, edge, profile)
-            best = select_best(candidates, weights=selector_weights)
-            if best is not None:
-                substitutions.append(best)
+        edge_g = _build_edge_dag(dag)
+        topo_edge_ids = list(nx.topological_sort(edge_g))
 
-        dag = apply_substitutions(dag, substitutions)
+        # Group violations by edge id; ordering inside an edge follows
+        # ``find_violations``' deterministic resource-use order.
+        violations_by_edge: dict[str, list[ConstraintViolation]] = {}
+        for v in violations:
+            violations_by_edge.setdefault(v.edge_id, []).append(v)
+
+        for eid in topo_edge_ids:
+            edge_violations = violations_by_edge.get(eid)
+            if not edge_violations:
+                continue
+            # Look up the *current* edge (may have been rewritten already
+            # by an earlier substitution on the same edge id).
+            current_edges_by_id = {e.id: e for e in dag.edges}
+            current_edge = current_edges_by_id[eid]
+            preferred = _upstream_container_names(dag, eid, edge_g)
+
+            for v in edge_violations:
+                candidates = proposer.propose(
+                    v,
+                    current_edge,
+                    profile,
+                    preferred_resource_names=preferred,
+                )
+                best = select_best(candidates, weights=selector_weights)
+                if best is None:
+                    continue
+                substitutions.append(best)
+                dag = apply_substitution(dag, best)
+                # Refresh the current edge for any remaining violations
+                # on the same edge id.
+                current_edge = next(e for e in dag.edges if e.id == eid)
 
     # 3. Verify resolution
     remaining = find_violations(dag, constraints)

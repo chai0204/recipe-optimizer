@@ -370,6 +370,16 @@
         "source": "seed"
       },
       {
+        "label": "鍋で混ぜ込む",
+        "resources": [
+          { "kind": "cook", "relative_duration": 1.0 },
+          { "kind": "container", "name_hint": "鍋", "relative_duration": 1.0 }
+        ],
+        "time_factor": 1.0,
+        "quality_factor": 1.0,
+        "source": "seed"
+      },
+      {
         "label": "ボウル+泡立て器",
         "resources": [
           { "kind": "cook", "relative_duration": 1.0 },

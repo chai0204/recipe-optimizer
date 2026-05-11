@@ -27,6 +27,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from ..data_io.tool_use_table import (
+    _matches_name_hint,
     add_entry,
     find_compatible,
     is_option_compatible,
@@ -147,23 +148,63 @@ def _build_replacement_edge(
     )
 
 
+CONTINUITY_QUALITY_BONUS = 0.25
+"""Per-shared-name bonus applied to ``quality_delta`` when a candidate
+reuses a container name that an upstream edge already occupies. This
+encodes the strong "use the same pot for the next step" preference
+that home cooking has by default — moving food across containers
+mid-recipe is unusual unless there is a specific reason. The bonus is
+sized to outrun typical option-level perks (e.g. a whisk being 5%
+better quality + 20% faster than chopsticks) so that continuity wins
+absent a clearly superior alternative."""
+
+
+def _continuity_bonus(
+    option: ToolOption,
+    preferred_resource_names: set[str] | None,
+) -> float:
+    """Bonus for each option spec whose ``name_hint`` matches a name in
+    ``preferred_resource_names`` under the same fuzzy policy used by
+    ``is_tool_owned`` (exact or one-way substring containment). The
+    fuzziness lets an option labelled "鍋で混ぜる" with ``name_hint="鍋"``
+    still continue from an upstream edge that committed to "片手鍋"."""
+    if not preferred_resource_names:
+        return 0.0
+    matches = 0
+    for spec in option.resources:
+        if not spec.name_hint:
+            continue
+        if any(
+            _matches_name_hint(pref, spec.name_hint)
+            for pref in preferred_resource_names
+        ):
+            matches += 1
+    return CONTINUITY_QUALITY_BONUS * matches
+
+
 def _option_to_candidate(
     option: ToolOption,
     edge: ProcessEdge,
     violation: ConstraintViolation,
+    preferred_resource_names: set[str] | None = None,
 ) -> SubstitutionCandidate:
     replacement = _build_replacement_edge(edge, option)
     time_delta = replacement.duration_min - edge.duration_min
-    quality_delta = option.quality_factor - 1.0
+    bonus = _continuity_bonus(option, preferred_resource_names)
+    quality_delta = (option.quality_factor - 1.0) + bonus
 
     sign_t = "+" if time_delta >= 0 else ""
     sign_q = "+" if quality_delta >= 0 else ""
     missing_repr = (
         f"{violation.missing_kind.value}/{violation.missing_name_hint or '*'}"
     )
+    continuity_note = (
+        f"、容器継続ボーナス +{bonus:.2f}" if bonus > 0 else ""
+    )
     rationale = (
         f"{missing_repr} の代替として {option.label} を使用"
-        f"（時間 {sign_t}{time_delta:.1f}分、品質 {sign_q}{quality_delta:.2f}）"
+        f"（時間 {sign_t}{time_delta:.1f}分、品質 {sign_q}{quality_delta:.2f}"
+        f"{continuity_note}）"
     )
 
     return SubstitutionCandidate(
@@ -198,7 +239,16 @@ class RecipeProposer:
         violation: ConstraintViolation,
         edge: ProcessEdge,
         profile: UserProfile,
+        preferred_resource_names: set[str] | None = None,
     ) -> list[SubstitutionCandidate]:
+        """Generate substitution candidates for one violation.
+
+        ``preferred_resource_names`` lets the pipeline hint at containers
+        that upstream edges have already committed to (e.g. the boiling
+        pot continues into the steeping step). Candidates whose resource
+        ``name_hint`` overlaps the preferred set receive a small quality
+        bonus, breaking ties toward continuity.
+        """
         owned = (
             profile.cooks
             + profile.burners
@@ -212,7 +262,7 @@ class RecipeProposer:
         existing = find_compatible(self.table, edge.action, owned)
         if existing:
             return [
-                _option_to_candidate(opt, edge, violation)
+                _option_to_candidate(opt, edge, violation, preferred_resource_names)
                 for opt in existing[:MAX_CANDIDATES]
             ]
 
@@ -227,7 +277,9 @@ class RecipeProposer:
                 update={"source": opt.source if opt.source != "seed" else "llm"}
             )
             add_entry(self.table, edge.action, tagged)
-            candidates.append(_option_to_candidate(tagged, edge, violation))
+            candidates.append(
+                _option_to_candidate(tagged, edge, violation, preferred_resource_names)
+            )
 
         return candidates[:MAX_CANDIDATES]
 
