@@ -128,10 +128,13 @@ def stage_3_parser_minimal(client):
         log(f"    {n.id}: {n.description!r}{marker}")
     log(f"  edges ({len(dag.edges)}):")
     for e in dag.edges:
-        tools = [t.name for t in e.tools_required]
+        uses = [
+            f"{u.kind.value}({u.name_hint or '*'},{u.hold_duration_min}m)"
+            for u in e.resource_uses
+        ]
         log(
-            f"    {e.id}: {e.action.value} {tools} "
-            f"dur={e.duration_min} attentive={e.attentive_min}"
+            f"    {e.id}: {e.action.value} dur={e.duration_min} "
+            f"resource_uses=[{', '.join(uses)}]"
         )
     log(f"  final_node_id: {dag.final_node_id}")
 
