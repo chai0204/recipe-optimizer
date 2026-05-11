@@ -250,7 +250,11 @@ action 別に `ToolOption` 配列。各 option は:
 
 `source` は `seed` / `llm` / `user_feedback` のいずれか。LLM 発見の追記は `add_entry(table, action, option)` で行い、テーブルは持続するため次回以降は決定論的に同じ候補が出る。
 
-## 6. 既知の課題（実プロダクト化に向けて）
+## 6. 限界
+
+本質的に避けられない不確実性（元レシピの曖昧さ・LLM の挙動・代替の semantic gap・スケジューラの greedy 性）は **[limitations.md](limitations.md)** に独立してまとめている。設計上の境界として扱う。
+
+## 7. 既知の課題（実プロダクト化に向けて）
 
 - **#4** proposer のコンテキスト非対応: 直前ステップで使った容器を次ステップでも継続するロジックがない（mugicha 蒸らしステップで「氷水で急冷」が選ばれる遠因）
 - **#5** `skill_factors` を scheduler の duration 補正に未反映
@@ -260,7 +264,7 @@ action 別に `ToolOption` 配列。各 option は:
 
 参照: [GitHub Issues](https://github.com/chai0204/recipe-optimizer/issues)
 
-## 7. 設計判断の根拠
+## 8. 設計判断の根拠
 
 これらの判断は [life](https://github.com/chai0204/life)（オーナーの記憶・知識リポ）の以下にも記録:
 

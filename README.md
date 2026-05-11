@@ -4,7 +4,7 @@
 
 > **Status**: PoC end-to-end が動作確認済み。Haiku 4.5 で実レシピのパース→代替提案→スケジュール→自然な日本語ステップ生成までの全段が成立する。実プロダクト化に向けては Issue を残し、本リポは設計検証の主目的を達成。
 
-詳細設計は **[docs/architecture.md](docs/architecture.md)** を参照。動作サンプルは **[docs/examples/](docs/examples/)** に格納（実 LLM 出力を含む共有用デモ 2 件）。
+詳細設計は **[docs/architecture.md](docs/architecture.md)** を参照。動作サンプルは **[docs/examples/](docs/examples/)** に格納（実 LLM 出力を含む共有用デモ 2 件）。元レシピと LLM 由来の **避けられない不確実性** は **[docs/limitations.md](docs/limitations.md)** に明記。
 
 ## アーキテクチャ要旨
 
