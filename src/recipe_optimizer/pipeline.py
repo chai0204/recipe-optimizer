@@ -23,9 +23,11 @@ Two entry points:
 from __future__ import annotations
 
 from .llm import LLMClient
+from .llm import LLMOutputError
 from .modules.checker import find_violations
 from .modules.parser import RecipeParser
 from .modules.proposer import RecipeProposer
+from .modules.renderer import RecipeRenderer
 from .modules.rewriter import apply_substitutions
 from .modules.scheduler import schedule
 from .modules.selector import Weights, select_best
@@ -65,6 +67,7 @@ def optimize_from_dag(
     raw_recipe: RawRecipe | None = None,
     selector_weights: Weights | None = None,
     raise_on_unresolvable: bool = True,
+    use_renderer: bool = False,
 ) -> RenderedRecipe:
     """Optimize a parsed RecipeDAG end-to-end.
 
@@ -119,6 +122,15 @@ def optimize_from_dag(
 
     # 5. Output formatters
     numbered = to_numbered_steps(dag, sched)
+    if use_renderer and not remaining and sched.steps:
+        # Opt-in LLM polish. Falls back silently to the deterministic
+        # numbered_steps if the client can't render (e.g. Mock without
+        # a registered handler).
+        try:
+            renderer = RecipeRenderer(client=client)
+            numbered = renderer.render(dag, sched, raw_recipe=raw_recipe)
+        except LLMOutputError:
+            pass
     mermaid = to_mermaid(dag, sched)
     shopping = build_shopping_list(dag, raw_recipe=raw_recipe)
 
@@ -142,6 +154,7 @@ def optimize_from_raw(
     client: LLMClient,
     selector_weights: Weights | None = None,
     raise_on_unresolvable: bool = True,
+    use_renderer: bool = False,
 ) -> RenderedRecipe:
     """Full pipeline: RawRecipe → parser → optimization → RenderedRecipe."""
     parser = RecipeParser(client=client)
@@ -154,6 +167,7 @@ def optimize_from_raw(
         raw_recipe=raw_recipe,
         selector_weights=selector_weights,
         raise_on_unresolvable=raise_on_unresolvable,
+        use_renderer=use_renderer,
     )
 
 

@@ -184,6 +184,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             table=table,
             client=client,
             raise_on_unresolvable=False,
+            use_renderer=args.renderer,
         )
     except UnresolvableRecipeError as exc:
         print(f"!! 最適化失敗: {exc}", file=sys.stderr)
@@ -222,6 +223,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="LLM backend",
     )
     run.add_argument("--model", default=None, help="model name override (backend-specific)")
+    run.add_argument(
+        "--renderer",
+        action="store_true",
+        help="enable LLM renderer for polished natural-language steps (extra LLM call)",
+    )
     run.add_argument(
         "--profile", default=str(_PROFILE_PATH), help="path to user_profile.json"
     )
