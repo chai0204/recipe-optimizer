@@ -412,6 +412,46 @@
         "quality_factor": 1.05,
         "source": "seed"
       }
+    ],
+    "rest": [
+      {
+        "label": "冷蔵庫で冷却",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.02 },
+          { "kind": "appliance", "name_hint": "冷蔵庫", "relative_duration": 1.0 }
+        ],
+        "time_factor": 1.0,
+        "quality_factor": 1.0,
+        "source": "seed"
+      },
+      {
+        "label": "室温で自然冷却",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.02 }
+        ],
+        "time_factor": 4.0,
+        "quality_factor": 0.95,
+        "source": "seed"
+      },
+      {
+        "label": "氷水で急冷",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.1 },
+          { "kind": "container", "name_hint": "ボウル", "relative_duration": 1.0 }
+        ],
+        "time_factor": 0.4,
+        "quality_factor": 1.0,
+        "source": "seed"
+      },
+      {
+        "label": "粗熱取り（時間置き）",
+        "resources": [
+          { "kind": "cook", "relative_duration": 0.02 }
+        ],
+        "time_factor": 1.5,
+        "quality_factor": 1.0,
+        "source": "seed"
+      }
     ]
   }
 }

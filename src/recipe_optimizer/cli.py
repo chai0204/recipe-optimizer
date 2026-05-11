@@ -22,8 +22,12 @@ import sys
 from pathlib import Path
 
 from .data_io import load_profile, load_raw_recipe, load_table
-from .llm import MockLLMClient
-from .pipeline import UnresolvableRecipeError, optimize_from_dag
+from .llm import LLMClient, MockLLMClient
+from .pipeline import (
+    UnresolvableRecipeError,
+    optimize_from_dag,
+    optimize_from_raw,
+)
 from .schemas import RecipeDAG
 
 
@@ -129,6 +133,66 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_llm_client(backend: str, model: str | None) -> LLMClient:
+    """Instantiate a real LLM client according to ``backend``.
+
+    Supported backends:
+      - ``mock``: returns MockLLMClient (will fail on parser since
+        nothing is registered — useful only when bypassing parsing).
+      - ``claude_cli``: uses ``ClaudeCliClient`` (no API key needed,
+        wraps ``claude -p``; default model ``haiku``).
+      - ``gguf``: ``LlamaCppClient`` with local GGUF (gemma-4-E4B Q4_K_M
+        by default).
+    """
+    if backend == "claude_cli":
+        from .llm.claude_cli import ClaudeCliClient
+
+        return ClaudeCliClient(model=model or "haiku")
+
+    if backend == "gguf":
+        from huggingface_hub import hf_hub_download
+
+        from .llm.llamacpp import LlamaCppClient
+
+        path = hf_hub_download(
+            "unsloth/gemma-4-E4B-it-GGUF",
+            "gemma-4-E4B-it-Q4_K_M.gguf",
+        )
+        return LlamaCppClient(model_path=path)
+
+    return MockLLMClient()
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    """Parse a RawRecipe JSON with a real LLM and optimise it end-to-end."""
+    profile = load_profile(args.profile)
+    table = load_table(args.table)
+    raw = load_raw_recipe(args.recipe)
+
+    print(
+        f"<!-- source: {args.recipe} | "
+        f"backend: {args.backend} (model={args.model or 'default'}) -->",
+        flush=True,
+    )
+
+    client = _build_llm_client(args.backend, args.model)
+
+    try:
+        rendered = optimize_from_raw(
+            raw_recipe=raw,
+            profile=profile,
+            table=table,
+            client=client,
+            raise_on_unresolvable=False,
+        )
+    except UnresolvableRecipeError as exc:
+        print(f"!! 最適化失敗: {exc}", file=sys.stderr)
+        return 1
+
+    _print_rendered_recipe(rendered, profile, original_dag=rendered.optimized_dag)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="recipe-optimizer",
@@ -145,6 +209,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--table", default=str(_TABLE_PATH), help="path to tool_use_table.json"
     )
     demo.set_defaults(func=_cmd_demo)
+
+    run = sub.add_parser(
+        "run",
+        help="parse a real RawRecipe JSON with a live LLM and optimise it",
+    )
+    run.add_argument("--recipe", required=True, help="path to a RawRecipe JSON file")
+    run.add_argument(
+        "--backend",
+        default="claude_cli",
+        choices=["claude_cli", "gguf", "mock"],
+        help="LLM backend",
+    )
+    run.add_argument("--model", default=None, help="model name override (backend-specific)")
+    run.add_argument(
+        "--profile", default=str(_PROFILE_PATH), help="path to user_profile.json"
+    )
+    run.add_argument(
+        "--table", default=str(_TABLE_PATH), help="path to tool_use_table.json"
+    )
+    run.set_defaults(func=_cmd_run)
 
     return parser
 
