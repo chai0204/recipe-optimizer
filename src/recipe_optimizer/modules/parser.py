@@ -17,7 +17,15 @@ error in the feedback turn.
 from __future__ import annotations
 
 from ..llm import LLMClient
-from ..schemas import ProcessType, RawRecipe, RecipeDAG
+from ..schemas import (
+    GoalNode,
+    ProcessEdge,
+    ProcessType,
+    RawRecipe,
+    RecipeDAG,
+    ResourceKind,
+    ResourceRequirement,
+)
 
 PARSER_LABEL = "parser"
 
@@ -78,6 +86,78 @@ Rules:
 """
 
 
+# ---------------------------------------------------------------------------
+# Few-shot worked example
+# ---------------------------------------------------------------------------
+#
+# Small quantized models (Gemma 4 E4B Q4_K_M) consistently produce *valid*
+# JSON under grammar constraint but choose wrong actions and leave
+# ``hold_duration_min`` at 0. One worked example demonstrating concrete
+# duration values, the cook/burner/container pattern, and an implicit
+# raw-ingredient node fixes most of those issues at no runtime cost.
+
+
+def _few_shot_example() -> tuple[str, RecipeDAG]:
+    example_input = _build_prompt(
+        RawRecipe(
+            id="ex_boiled_egg",
+            title="ゆで卵",
+            servings=2,
+            ingredients_text=["卵 2個", "水 適量"],
+            steps_text=[
+                "鍋に水を入れて中火で沸騰させる",
+                "卵を入れて10分茹でる",
+            ],
+        )
+    )
+
+    def req(kind, hold, *, name_hint=None):
+        return ResourceRequirement(
+            kind=kind, name_hint=name_hint, hold_duration_min=hold
+        )
+
+    example_output = RecipeDAG(
+        title="ゆで卵",
+        servings=2,
+        nodes=[
+            GoalNode(id="n_water", description="水"),
+            GoalNode(id="n_eggs_raw", description="生卵 2個"),
+            GoalNode(id="n_boiling", description="沸騰した湯"),
+            GoalNode(id="n_done", description="ゆで卵", is_final=True),
+        ],
+        edges=[
+            ProcessEdge(
+                id="e_boil",
+                from_nodes=["n_water"],
+                to_node="n_boiling",
+                action=ProcessType.BOIL_WATER,
+                description="鍋に水を入れて中火で沸騰させる",
+                duration_min=5.0,
+                resource_uses=[
+                    req(ResourceKind.COOK, 1.0),
+                    req(ResourceKind.BURNER, 5.0),
+                    req(ResourceKind.CONTAINER, 5.0, name_hint="鍋"),
+                ],
+            ),
+            ProcessEdge(
+                id="e_simmer",
+                from_nodes=["n_boiling", "n_eggs_raw"],
+                to_node="n_done",
+                action=ProcessType.SIMMER,
+                description="卵を入れて10分茹でる",
+                duration_min=10.0,
+                resource_uses=[
+                    req(ResourceKind.COOK, 0.5),
+                    req(ResourceKind.BURNER, 10.0),
+                    req(ResourceKind.CONTAINER, 10.0, name_hint="鍋"),
+                ],
+            ),
+        ],
+        final_node_id="n_done",
+    )
+    return example_input, example_output
+
+
 def _build_prompt(recipe: RawRecipe) -> str:
     ingredients_block = "\n".join(f"- {line}" for line in recipe.ingredients_text)
     steps_block = "\n".join(
@@ -109,15 +189,15 @@ class RecipeParser:
 
     def parse(self, recipe: RawRecipe) -> RecipeDAG:
         prompt = _build_prompt(recipe)
-        # ``inject_schema=False`` because backends like LlamaCppClient
-        # apply the schema as a sampling-time grammar constraint —
-        # the textual schema dump becomes redundant. The compact shape
-        # description in SYSTEM_PROMPT remains as a guide for which
-        # values to populate (durations, action enum, etc.).
+        # ``inject_schema=False``: LlamaCppClient enforces shape via a
+        # sampling-time grammar. A single worked example then teaches
+        # the model what *contents* to fill in — concrete durations,
+        # action choice, and the cook/burner/container pattern.
         dag = self.client.generate_structured(
             prompt=prompt,
             output_schema=RecipeDAG,
             system=SYSTEM_PROMPT,
+            examples=[_few_shot_example()],
             max_retries=self.max_retries,
             label=PARSER_LABEL,
             inject_schema=False,
