@@ -44,7 +44,17 @@ def _resolve_gguf_path() -> str:
     return hf_hub_download(GGUF_REPO, GGUF_FILE)
 
 
+_BACKEND = os.environ.get("RECIPE_OPTIMIZER_BACKEND", "gguf")  # "gguf" | "claude_cli"
+
+
 def _new_client():
+    if _BACKEND == "claude_cli":
+        from recipe_optimizer.llm.claude_cli import ClaudeCliClient  # noqa: PLC0415
+
+        model = os.environ.get("RECIPE_OPTIMIZER_CLAUDE_MODEL", "haiku")
+        log(f"  instantiating ClaudeCliClient (model={model}, no local load) ...")
+        return ClaudeCliClient(model=model)
+
     from recipe_optimizer.llm.llamacpp import LlamaCppClient  # noqa: PLC0415
 
     log(f"  resolving GGUF path ({GGUF_REPO} / {GGUF_FILE}) ...")
