@@ -75,4 +75,4 @@ recipe-optimizer run --recipe data/recipes/oyakodon.json --backend gguf
 
 ## ライセンス
 
-Private (TBD)
+[MIT License](LICENSE) — Copyright (c) 2026 Shun
