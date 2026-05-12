@@ -264,7 +264,132 @@ action 別に `ToolOption` 配列。各 option は:
 
 参照: [GitHub Issues](https://github.com/chai0204/recipe-optimizer/issues)
 
-## 8. 設計判断の根拠
+## 8. リレーショナルモデルとしての制約
+
+データ層を Pydantic の階層型ではなく **フラットなリレーションの集合** として見ると、checker と scheduler の論理が SQL（または Datalog）として宣言的に書ける。実装は手続き的だが、不変条件はリレーションレベルで定義されている。
+
+### 8.1 ER スキーマ
+
+```
+Resource (id PK, kind, name)
+GoalNode (node_id PK, description, is_final)
+ProcessEdge (edge_id PK, action, duration_min, to_node FK→GoalNode)
+EdgeFromNode (edge_id FK→ProcessEdge, from_node FK→GoalNode,
+              PK=(edge_id, from_node))     -- 多対多: エッジは複数の入力ノードを持つ
+ResourceRequirement (edge_id FK→ProcessEdge, seq,
+                     kind, name_hint, hold_duration_min, start_offset_min,
+                     PK=(edge_id, seq))
+
+-- 学習層
+ToolOption (action, label, time_factor, quality_factor, source,
+            PK=(action, label))
+ResourceSpec (action, label, seq, kind, name_hint, relative_duration,
+              PK=(action, label, seq),
+              FK=(action, label)→ToolOption)
+
+-- スケジューラ出力
+ScheduledStep (edge_id PK FK→ProcessEdge, start_min, end_min)
+ScheduledAssignment (edge_id FK, resource_id FK→Resource,
+                     hold_start_min, hold_end_min,
+                     PK=(edge_id, resource_id, hold_start_min))
+```
+
+`Resource` と `ResourceRequirement` は「具体物プール」と「需要側のチケット」の関係。`kind+name_hint` のペアが両者をマッチングするキーになる。
+
+### 8.2 checker は単純な反結合
+
+`find_violations` は以下と等価:
+
+```sql
+-- 各リソース要求に対し、プールにマッチする Resource がない行を返す
+SELECT rr.edge_id, rr.kind, rr.name_hint
+FROM ResourceRequirement rr
+WHERE NOT EXISTS (
+  SELECT 1 FROM Resource r
+  WHERE r.kind = rr.kind
+    AND (rr.name_hint IS NULL OR r.name = rr.name_hint)
+);
+```
+
+`name_hint IS NULL` は「kind が同じならどれでも可」のワイルドカード。`e_simmer_onion` の `(burner, null)` 要求は `burner_1` でも `burner_2` でも通る。
+
+### 8.3 substitution は ResourceRequirement の差し替え
+
+`apply_substitution` は SQL では:
+
+```sql
+-- 違反エッジの resource_uses を削除
+DELETE FROM ResourceRequirement WHERE edge_id = :violated_edge_id;
+
+-- 選ばれた ToolOption の ResourceSpec を resource_uses に展開して挿入
+INSERT INTO ResourceRequirement (edge_id, seq, kind, name_hint, hold_duration_min)
+SELECT :violated_edge_id, rs.seq, rs.kind, rs.name_hint,
+       :new_duration_min * rs.relative_duration
+FROM ResourceSpec rs
+WHERE rs.action = :action AND rs.label = :chosen_label;
+
+-- duration_min と action は ProcessEdge を UPDATE
+UPDATE ProcessEdge
+   SET duration_min = :new_duration_min, action = :new_action
+ WHERE edge_id = :violated_edge_id;
+```
+
+`replacement_edge` がエッジ ID・`from_nodes`・`to_node` を保存することは「PK と外部参照を保存」と同義で、これがトポロジー不変性を保証する。
+
+### 8.4 scheduler の妥当性は2つの NOT EXISTS で言える
+
+任意の `Schedule` は以下を満たさなければならない:
+
+```sql
+-- (a) 依存制約: 各エッジは全 predecessor 終了後に開始
+ASSERT NOT EXISTS (
+  SELECT 1
+  FROM ProcessEdge e
+  JOIN EdgeFromNode ef    ON ef.edge_id = e.edge_id
+  JOIN ProcessEdge pe     ON pe.to_node = ef.from_node
+  JOIN ScheduledStep s    ON s.edge_id = e.edge_id
+  JOIN ScheduledStep ps   ON ps.edge_id = pe.edge_id
+  WHERE s.start_min < ps.end_min
+);
+
+-- (b) 資源排他: 同一 Resource は時間区間が重ならない
+ASSERT NOT EXISTS (
+  SELECT 1
+  FROM ScheduledAssignment a1
+  JOIN ScheduledAssignment a2
+    ON a1.resource_id = a2.resource_id
+   AND a1.edge_id <> a2.edge_id
+   AND a1.hold_start_min < a2.hold_end_min
+   AND a2.hold_start_min < a1.hold_end_min
+);
+```
+
+makespan の最小化は (a)(b) を満たす中での `MAX(end_min)` 最小化（NP-hard、RCPSP）。実装は greedy で近似する。クリティカルパスは (a) のみで定義（infinite resources の理論下限）:
+
+```sql
+-- 各ノードの最早完了時刻を再帰計算
+WITH RECURSIVE earliest(node_id, t) AS (
+  SELECT node_id, 0.0 FROM GoalNode
+   WHERE NOT EXISTS (SELECT 1 FROM ProcessEdge WHERE to_node = node_id)
+  UNION ALL
+  SELECT e.to_node, MAX(child.t + e.duration_min)
+  FROM ProcessEdge e
+  JOIN EdgeFromNode ef ON ef.edge_id = e.edge_id
+  JOIN earliest child  ON child.node_id = ef.from_node
+  GROUP BY e.to_node, e.duration_min
+)
+SELECT MAX(t) FROM earliest;
+```
+
+### 8.5 何が嬉しいか
+
+- **論理と実装の分離**: scheduler は近似アルゴリズムだが、「正しさ」は宣言的に書ける（(a)(b) を満たすこと）。テストでこの不変条件をそのまま assert できる
+- **永続化の自然な経路**: PoC は JSON だが、SQLite なら全モデルがそのままテーブルになる。`ToolUseTable` の学習データ蓄積も `INSERT INTO ResourceSpec` で済む
+- **新しい問い合わせが SQL で書ける**: 「電子レンジを使ったレシピだけ列挙」「片手鍋を 5 分以上占有するエッジを集計」など、`resource_uses` を1級市民として扱える
+
+[examples/oyakodon.md §裏側の構造](examples/oyakodon.md#裏側の構造テーブル表現) に、実際のレシピでこのリレーションがどう埋まるかの完全な dump がある。
+
+## 9. 設計判断の根拠
 
 これらの判断は [life](https://github.com/chai0204/life)（オーナーの記憶・知識リポ）の以下にも記録:
 
